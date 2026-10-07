@@ -1,0 +1,232 @@
+// Source of truth for the B-Bot data model.
+//
+// Prisma cannot read the datasource provider from an env var, so
+// scripts/prepare-db.mjs renders this template into schema.prisma for whichever
+// database DATABASE_URL points at. Placeholders:
+//   __PROVIDER__  sqlite | postgresql | mysql | mongodb
+//   __ID__        `@map("_id")` on MongoDB, empty elsewhere
+//   __TEXT__      `@db.LongText` on MySQL (String is VARCHAR(191) there), empty elsewhere
+//
+// Keep the model portable: no enums, Json, scalar lists, autoincrement, or
+// composite ids, and no @default on __TEXT__ columns.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "__PROVIDER__"
+  url      = env("DATABASE_URL")
+}
+
+model Setting {
+  key       String   @id __ID__
+  value     String   __TEXT__
+  updatedAt DateTime @updatedAt
+}
+
+model Session {
+  id              String    @id __ID__
+  name            String
+  phone           String?
+  pushName        String?
+  authMethod      String?
+  autoStart       Boolean   @default(true)
+  lastConnectedAt DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+}
+
+/// Signal keys + creds when AUTH_STORE=database. `hash` is sha256(category:keyId)
+/// so uniqueness survives case-insensitive collations and long key ids.
+model AuthKey {
+  id        String @id @default(cuid()) __ID__
+  sessionId String
+  hash      String
+  category  String
+  keyId     String __TEXT__
+  value     String __TEXT__
+
+  @@unique([sessionId, hash])
+}
+
+/// Mirror of the on-disk auth folder when AUTH_STORE=file.
+model AuthFileBackup {
+  id        String   @id @default(cuid()) __ID__
+  sessionId String
+  file      String
+  content   String   __TEXT__
+  updatedAt DateTime @updatedAt
+
+  @@unique([sessionId, file])
+}
+
+model CachedMessage {
+  id         String    @id @default(cuid()) __ID__
+  sessionId  String
+  messageId  String
+  remoteJid  String
+  senderJid  String
+  senderName String?
+  fromMe     Boolean   @default(false)
+  kind       String
+  text       String?   __TEXT__
+  raw        String    __TEXT__
+  mediaPath  String?   __TEXT__
+  mediaMime  String?
+  mediaName  String?   __TEXT__
+  timestamp  DateTime
+  expiresAt  DateTime
+  revokedAt  DateTime?
+
+  @@unique([sessionId, messageId])
+  @@index([expiresAt])
+}
+
+model Contact {
+  id        String   @id @default(cuid()) __ID__
+  sessionId String
+  jid       String
+  name      String?
+  notify    String?
+  updatedAt DateTime @updatedAt
+
+  @@unique([sessionId, jid])
+}
+
+model GroupSetting {
+  id               String   @id @default(cuid()) __ID__
+  sessionId        String
+  jid              String
+  name             String?
+  antiLink         Boolean  @default(false)
+  antiLinkMode     String   @default("whatsapp")
+  antiLinkAction   String   @default("delete")
+  warnLimit        Int      @default(3)
+  whitelist        String   __TEXT__
+  welcomeEnabled   Boolean  @default(false)
+  welcomeTemplate  String?  __TEXT__
+  farewellEnabled  Boolean  @default(false)
+  farewellTemplate String?  __TEXT__
+  updatedAt        DateTime @updatedAt
+
+  @@unique([sessionId, jid])
+}
+
+model GroupWarning {
+  id        String   @id @default(cuid()) __ID__
+  sessionId String
+  groupJid  String
+  userJid   String
+  count     Int      @default(0)
+  updatedAt DateTime @updatedAt
+
+  @@unique([sessionId, groupJid, userJid])
+}
+
+/// What the bot did (recovered a message, removed a link, rejected a call...),
+/// shown as the dashboard's activity feed.
+model ActivityEvent {
+  id        String   @id @default(cuid()) __ID__
+  sessionId String
+  type      String
+  title     String   __TEXT__
+  detail    String?  __TEXT__
+  chat      String?
+  createdAt DateTime @default(now())
+
+  @@index([sessionId, createdAt])
+}
+
+/// The assistant's short memory: the latest few turns of each chat.
+model AiMessage {
+  id        String   @id @default(cuid()) __ID__
+  sessionId String
+  chatJid   String
+  /// "user" or "model"
+  role      String
+  text      String   __TEXT__
+  createdAt DateTime @default(now())
+
+  @@index([sessionId, chatJid, createdAt])
+}
+
+/// A numbered menu the bot sent. Replying to that message with a number runs
+/// the matching option; `options` is a JSON array of { label, action }.
+model MenuPrompt {
+  id        String   @id @default(cuid()) __ID__
+  sessionId String
+  chatJid   String
+  messageId String
+  options   String   __TEXT__
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+
+  @@unique([sessionId, messageId])
+  @@index([sessionId, chatJid, createdAt])
+  @@index([expiresAt])
+}
+
+/// A menu designed in the dashboard, sent when someone types its trigger.
+model CustomMenu {
+  id        String   @id @default(cuid()) __ID__
+  sessionId String
+  name      String
+  enabled   Boolean  @default(true)
+  trigger   String
+  match     String   @default("exact")
+  scope     String   @default("private")
+  title     String
+  body      String?  __TEXT__
+  /// JSON array of { label, type: "text" | "menu" | "command", value }
+  options   String   __TEXT__
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([sessionId])
+}
+
+model ScheduledJob {
+  id            String    @id @default(cuid()) __ID__
+  sessionId     String
+  name          String
+  kind          String
+  cron          String?
+  timezone      String?
+  runAt         DateTime?
+  targets       String    __TEXT__
+  text          String?   __TEXT__
+  mediaPath     String?   __TEXT__
+  mediaMime     String?
+  mediaName     String?   __TEXT__
+  status        String
+  attempts      Int       @default(0)
+  maxRetries    Int       @default(3)
+  nextAttemptAt DateTime?
+  lastRunAt     DateTime?
+  lastError     String?   __TEXT__
+  /// JSON array of targets already delivered in the current cycle, so a retry
+  /// (or a restart mid-broadcast) only sends to whoever is still missing.
+  progress      String?   __TEXT__
+  runCount      Int       @default(0)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  runs          JobRun[]
+
+  @@index([status, nextAttemptAt])
+}
+
+model JobRun {
+  id         String       @id @default(cuid()) __ID__
+  jobId      String
+  job        ScheduledJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  attempt    Int
+  status     String
+  sent       Int          @default(0)
+  failed     Int          @default(0)
+  error      String?      __TEXT__
+  startedAt  DateTime     @default(now())
+  finishedAt DateTime?
+
+  @@index([jobId])
+}

@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Build and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # Builds the dashboard, generates the Prisma client and compiles the server.
+      - run: npm run build
+
+      - run: npm run typecheck
+
+      # Offline suites only: each runs against its own throwaway SQLite database.
+      - run: npm test
+
+  docker:
+    name: Docker image
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the image
+        run: docker build -t b-bot:ci .
+
+      - name: Start a container
+        run: docker run -d --name bbot -p 3000:3000 b-bot:ci
+
+      - name: Wait until it is healthy
+        run: |
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://localhost:3000/api/health; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "The container never became healthy."
+          exit 1
+
+      - name: Check it serves the dashboard and does not run as root
+        run: |
+          test "$(docker exec bbot id -u)" != "0"
+          curl -fsS http://localhost:3000/ | grep -q "<title>B-Bot</title>"
+          curl -fsS http://localhost:3000/api/auth/status | grep -q '"setupRequired":true'
+          curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/api/settings | grep -q 401
+
+      - name: Container logs
+        if: always()
+        run: docker logs bbot

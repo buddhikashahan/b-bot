@@ -1,0 +1,33 @@
+{
+  "name": "b-bot",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Self-hostable WhatsApp bot and management dashboard powered by Baileys",
+  "type": "module",
+  "engines": {
+    "node": ">=20.12"
+  },
+  "workspaces": [
+    "server",
+    "web"
+  ],
+  "scripts": {
+    "dev": "concurrently -n server,web -c cyan,magenta \"npm run dev -w server\" \"npm run dev -w web\"",
+    "build": "npm run build -w web && npm run build -w server",
+    "start": "node server/scripts/start.mjs",
+    "db:prepare": "node server/scripts/prepare-db.mjs",
+    "typecheck": "npm run typecheck -w server && npm run typecheck -w web",
+    "test": "node server/scripts/test.mjs"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.5"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/buddhikashahan/b-bot.git"
+  },
+  "homepage": "https://github.com/buddhikashahan/b-bot#readme",
+  "bugs": {
+    "url": "https://github.com/buddhikashahan/b-bot/issues"
+  }
+}

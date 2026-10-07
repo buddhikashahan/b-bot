@@ -1,0 +1,59 @@
+# B-Bot: `docker compose up -d`, then open http://localhost:3000
+#
+# Everything is optional. Put overrides in a .env file next to this one
+# (see .env.example). With no configuration B-Bot uses SQLite inside the
+# bbot-data volume and asks you to choose a dashboard password on first visit.
+
+services:
+  bbot:
+    build: .
+    image: b-bot:latest
+    container_name: b-bot
+    restart: unless-stopped
+    ports:
+      - '${PORT:-3000}:3000'
+    environment:
+      TZ: ${TZ:-UTC}
+      DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD:-}
+      APP_SECRET: ${APP_SECRET:-}
+      # Leave empty for the built-in SQLite file. Otherwise postgresql://, mysql:// or mongodb://
+      DATABASE_URL: ${DATABASE_URL:-}
+      AUTH_STORE: ${AUTH_STORE:-file}
+      HEADLESS: ${HEADLESS:-false}
+      PAIRING_PHONE: ${PAIRING_PHONE:-}
+      TRUST_PROXY: ${TRUST_PROXY:-false}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    volumes:
+      - bbot-data:/app/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: false
+
+  # Optional PostgreSQL. Enable with:  docker compose --profile postgres up -d
+  # and set DATABASE_URL=postgresql://bbot:<POSTGRES_PASSWORD>@postgres:5432/bbot in .env
+  # The database is only reachable from inside this compose network (no published port).
+  postgres:
+    profiles: ['postgres']
+    image: postgres:17-alpine
+    container_name: b-bot-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: bbot
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bbot}
+      POSTGRES_DB: bbot
+    volumes:
+      - bbot-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U bbot -d bbot']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  bbot-data:
+  bbot-postgres:

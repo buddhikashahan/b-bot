@@ -1,0 +1,44 @@
+# --- secrets and local configuration: never commit ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+cookies.txt
+
+# --- runtime data: WhatsApp credentials, databases, cached media, uploads, yt-dlp ---
+data/
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# --- dependencies and build output ---
+node_modules/
+dist/
+server/public/
+# generated from schema.template.prisma for the active DATABASE_URL
+server/prisma/schema.prisma
+server/prisma/.generated
+*.tsbuildinfo
+
+# --- logs and temp files ---
+*.log
+npm-debug.log*
+.tmp/
+tmp/
+coverage/
+
+# --- editors and operating systems ---
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+
+# --- local assistant / tool settings ---
+.claude/

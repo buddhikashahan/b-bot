@@ -1,0 +1,8 @@
+# Store and check out text with LF everywhere: the Dockerfile, shell snippets and
+# scripts must not pick up Windows line endings.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff2 binary
