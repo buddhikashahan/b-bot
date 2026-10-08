@@ -177,6 +177,38 @@ const choice = (button: string, hint: string, text: string): MenuOption => {
   const [icon, ...words] = button.split(' ');
   return { label: `${icon} ${bold(words.join(' '))}${hint ? ` ${italic(hint)}` : ''}`, button, action: { type: 'command', text } };
 };
+/**
+ * The YouTube video a format command is about: a link (also in the replied-to message), or
+ * otherwise the best match for the words typed after the options.
+ * @param options the option words of the command ("mp3", "720"...), which are not part of a name
+ * @returns the link; undefined after replying when there is nothing to work with
+ */
+async function youtubeTarget(ctx: CommandContext, options: string[], help: string): Promise<string | undefined> {
+  const raw = findUrl(ctx.text) ?? findUrl(ctx.quoted?.text ?? '');
+  if (raw) {
+    const url = parseMediaUrl(raw, ['youtube']);
+    if (!url) await ctx.reply(fail('That is not a YouTube link', `For other sites use ${ctx.prefix}fb, ${ctx.prefix}tiktok, ${ctx.prefix}insta or ${ctx.prefix}x.`));
+    return url;
+  }
+  const query = ctx.args.filter((word, index) => !((index === 0 || index === ctx.args.length - 1) && options.includes(word.toLowerCase()))).join(' ');
+  if (!query) {
+    await ctx.reply(help);
+    return undefined;
+  }
+  await ctx.react('🔎');
+  const results = await attempt(ctx, 'Search failed', () => searchYouTube(query, 1));
+  if (!results) return undefined;
+  if (results.length === 0) await ctx.reply(fail('Nothing found', `No YouTube result for "${query}".`));
+  return results[0]?.url;
+}
+
+/** The option word of a format command: the first or the last word typed, so a name may contain such words. */
+function optionWord(ctx: CommandContext, options: string[]): string | undefined {
+  const first = ctx.args[0]?.toLowerCase() ?? '';
+  const last = ctx.args.at(-1)?.toLowerCase() ?? '';
+  return options.includes(first) ? first : options.includes(last) ? last : undefined;
+}
+
 const audioChoices = (url: string) => ({
   standard: choice('🎵 Audio', 'plays in the chat', `yta std ${url}`),
   file: choice('📄 Audio file', 'MP3 document', `yta doc ${url}`),
@@ -302,7 +334,7 @@ export const downloadCommands: Command[] = [
     name: 'song',
     aliases: ['music', 'audio'],
     category: 'download',
-    description: 'Find a song and choose how to get it: audio, MP3, small file, voice note or document.',
+    description: 'Find a song and ask the person how they want it: audio, MP3, small file, voice note or document.',
     usage: 'song <name or link>',
     cooldown: 10,
     async execute(ctx) {
@@ -315,7 +347,7 @@ export const downloadCommands: Command[] = [
     name: 'video',
     aliases: ['vid', 'ytvideo'],
     category: 'download',
-    description: 'Find a video and choose the quality: 360p to 1080p, or as a document.',
+    description: 'Find a video and ask the person which quality they want: 360p to 1080p, or as a document.',
     usage: 'video <name or link>',
     cooldown: 10,
     async execute(ctx) {
@@ -328,7 +360,7 @@ export const downloadCommands: Command[] = [
     name: 'play',
     aliases: ['p'],
     category: 'download',
-    description: 'Play a song straight away, no questions asked.',
+    description: 'Send a song straight away as audio, by name or link, no questions asked.',
     usage: 'play <name or link>',
     cooldown: 15,
     async execute(ctx) {
@@ -341,19 +373,21 @@ export const downloadCommands: Command[] = [
     name: 'yta',
     aliases: ['ytmp3', 'ytaudio'],
     category: 'download',
-    description: 'Download YouTube audio in a chosen format.',
-    usage: 'yta [std|mp3|small|voice|doc] <link>',
+    description: 'Download a song from YouTube straight away, by name or link, in a chosen format: std (plays in the chat), mp3, small, voice (voice note) or doc (MP3 file).',
+    usage: 'yta [std|mp3|small|voice|doc] <name or link>',
     cooldown: 15,
     async execute(ctx) {
       if (!(await allowed(ctx))) return;
-      const url = linkFrom(ctx, ['youtube']);
-      if (!url) {
-        await ctx.reply(
-          `${usage(ctx.prefix, 'yta [std|mp3|small|voice|doc] <link>', 'yta mp3 https://youtu.be/abc123')}\n${note('std: standard audio. mp3: 192 kbps MP3. small: 64 kbps. voice: voice note. doc: as a file.')}`
-        );
-        return;
-      }
-      const mode = ['std', 'mp3', 'small', 'voice', 'doc'].find(word => hasWord(ctx, word)) ?? 'std';
+      const modes = ['std', 'mp3', 'small', 'voice', 'doc'];
+      const url = await youtubeTarget(
+        ctx,
+        modes,
+        `${usage(ctx.prefix, 'yta [std|mp3|small|voice|doc] <name or link>', 'yta mp3 lofi study beats')}\n${note('std: standard audio. mp3: 192 kbps MP3. small: 64 kbps. voice: voice note. doc: as a file.')}`
+      );
+      if (!url) return;
+      const mode = optionWord(ctx, modes) ?? 'std';
+      // Found by name: say which track it is before the audio arrives.
+      const byName = !findUrl(ctx.text) && !findUrl(ctx.quoted?.text ?? '');
       const deliveries: Record<string, Delivery> = {
         std: { kind: 'audio' },
         mp3: { kind: 'audio', audio: 'mp3' },
@@ -361,27 +395,28 @@ export const downloadCommands: Command[] = [
         voice: { kind: 'audio', audio: 'small', voice: true },
         doc: { kind: 'audio', audio: 'mp3', asDocument: true }
       };
-      await deliver(ctx, url, deliveries[mode], '🎵', 'Song');
+      await deliver(ctx, url, { ...deliveries[mode], announce: byName }, '🎵', 'Song');
     }
   },
   {
     name: 'ytv',
     aliases: ['ytmp4'],
     category: 'download',
-    description: 'Download a YouTube video in a chosen quality.',
-    usage: 'ytv [360|480|720|1080|doc] <link>',
+    description: 'Download a video from YouTube straight away, by name or link, in a chosen quality (360, 480, 720 or 1080), or as a file (doc).',
+    usage: 'ytv [360|480|720|1080|doc] <name or link>',
     cooldown: 15,
     async execute(ctx) {
       if (!(await allowed(ctx))) return;
-      const url = linkFrom(ctx, ['youtube']);
-      if (!url) {
-        await ctx.reply(
-          `${usage(ctx.prefix, 'ytv [360|480|720|1080|doc] <link>', 'ytv 480 https://youtu.be/abc123')}\n${note('A lower quality is used automatically when the chosen one would exceed the size limit.')}`
-        );
-        return;
-      }
-      const height = [360, 480, 720, 1080].find(value => hasWord(ctx, String(value)) || hasWord(ctx, `${value}p`)) ?? 720;
-      await deliver(ctx, url, { kind: 'video', maxHeight: height, asDocument: hasWord(ctx, 'doc') }, '🎬', `Video ${height}p`);
+      const options = ['360', '480', '720', '1080', '360p', '480p', '720p', '1080p', 'doc'];
+      const url = await youtubeTarget(
+        ctx,
+        options,
+        `${usage(ctx.prefix, 'ytv [360|480|720|1080|doc] <name or link>', 'ytv 480 how to tie a tie')}\n${note('A lower quality is used automatically when the chosen one would exceed the size limit.')}`
+      );
+      if (!url) return;
+      const option = optionWord(ctx, options);
+      const height = Number.parseInt(option ?? '', 10) || 720;
+      await deliver(ctx, url, { kind: 'video', maxHeight: height, asDocument: option === 'doc' }, '🎬', `Video ${height}p`);
     }
   },
   {

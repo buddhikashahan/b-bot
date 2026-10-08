@@ -1,4 +1,4 @@
-import { AiError, ask, clearMemory, getApiKey, type Question } from '../../features/ai.js';
+import { AiError, converse, clearMemory, getApiKey, runCommands, type Question } from '../../features/ai.js';
 import { updateSettings } from '../../settings.js';
 import { bold, fail, note, usage } from '../../whatsapp/format.js';
 import { contentOf } from '../../whatsapp/message-utils.js';
@@ -15,8 +15,10 @@ async function photoOf(ctx: CommandContext): Promise<Buffer | undefined> {
 async function respond(ctx: CommandContext, question: Omit<Question, 'chatJid' | 'senderName' | 'group'>): Promise<void> {
   await ctx.sock.sendPresenceUpdate('composing', ctx.jid).catch(() => {});
   try {
-    const answer = await ask(ctx.bot, { ...question, chatJid: ctx.jid, senderName: ctx.senderName, group: ctx.group?.subject });
-    await ctx.reply(answer);
+    const { answer, commands } = await converse(ctx.bot, { ...question, chatJid: ctx.jid, senderName: ctx.senderName, group: ctx.group?.subject });
+    if (answer) await ctx.reply(answer);
+    // Commands the assistant chose to use for this request; each one answers by itself.
+    await runCommands(ctx.bot, ctx.msg, commands);
   } catch (error) {
     if (!(error instanceof AiError)) throw error;
     await ctx.reply(fail('The AI could not answer', error.message));
@@ -30,7 +32,7 @@ export const aiCommands: Command[] = [
     name: 'ai',
     aliases: ['ask', 'gemini', 'gpt', 'bot'],
     category: 'ai',
-    description: 'Ask the AI anything. Attach or reply to a photo to ask about it.',
+    description: 'Ask the AI anything, or ask it to do something the bot can do. Attach or reply to a photo to ask about it.',
     usage: 'ai <question>',
     cooldown: 5,
     async execute(ctx) {
@@ -42,7 +44,7 @@ export const aiCommands: Command[] = [
       }
       // A replied-to message becomes part of the question, so "what does this mean?" works.
       const text = quoted && !image ? `About this message: "${quoted.slice(0, 3000)}"\n\n${ctx.text.trim() || 'Explain it.'}` : ctx.text.trim();
-      await respond(ctx, { text, image });
+      await respond(ctx, { text, image, msg: ctx.msg });
     }
   },
   {

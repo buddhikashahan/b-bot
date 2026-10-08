@@ -167,6 +167,12 @@ export const SettingsSchema = z.object({
       thinking: z.enum(['low', 'medium', 'high']).default('low'),
       /** Look at photos people send. */
       images: z.boolean().default(true),
+      /**
+       * Let the assistant run the bot's commands when someone asks for what a command does
+       * ("download that song as MP3", "what's the weather in Kandy"). It can only use commands
+       * the person asking could type themselves.
+       */
+      commands: z.boolean().default(true),
       /** Listen to voice notes people send. */
       voiceNotes: z.boolean().default(true),
       /** Answer a voice note with a voice note. Off answers it in text. */

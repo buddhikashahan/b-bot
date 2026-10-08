@@ -69,6 +69,24 @@ const server = http.createServer((req, res) => {
     }
     const last = body.contents.at(-1);
     const text = last.parts.map((p: any) => p.text ?? '').join(' ');
+    // "TOOL:calc|2+2" makes the stand-in call run_command, the way a model does when asked to do something.
+    const wanted = [...text.matchAll(/TOOL:([\w-]+)\|([^\n]*?)(?= TOOL:| SAYING|$)/g)];
+    if (wanted.length && body.tools) {
+      return send(200, {
+        candidates: [
+          {
+            content: {
+              parts: [
+                { text: 'planning', thought: true },
+                ...(text.includes('SAYING') ? [{ text: 'One moment.' }] : []),
+                ...wanted.map(match => ({ functionCall: { name: 'run_command', args: { command: match[1], arguments: match[2] } } }))
+              ]
+            },
+            finishReason: 'STOP'
+          }
+        ]
+      });
+    }
     if (text.includes('BLOCKME')) return send(200, { promptFeedback: { blockReason: 'SAFETY' } });
     if (last.parts.some((p: any) => p.inlineData?.mimeType.startsWith('audio/'))) {
       return send(200, { candidates: [{ content: { parts: [{ text: 'HEARD: what time do you open\n\nWe open at *nine* every day. 🙂' }] }, finishReason: 'STOP' }] });
@@ -481,6 +499,48 @@ const toEnglish = await say('.tr', { quotedMessage: { conversation: 'Bonjour tou
 check('translate: a bare reply means "into English"', toEnglish.text.includes('*To:* English') && toEnglish.text.includes('Bonjour tout le monde'), toEnglish.text);
 check('translate: stays out of the chat memory', (await prisma.aiMessage.count({ where: { chatJid: translated.from } })) === 0);
 
+// ================= the assistant using commands =================
+const toolsBefore = { ...getSettings().ai };
+await updateSettings({ ai: { enabled: true, scope: 'private', commands: true } });
+const noor = newPerson();
+const pinged = await say('are you there? TOOL:ping|', { from: noor, wait: 1200 });
+const toolRequest = pinged.calls[0]?.body;
+const offeredNames: string[] = toolRequest?.tools?.[0].functionDeclarations[0].parameters.properties.command.enum ?? [];
+const toolRules: string = toolRequest?.systemInstruction.parts[0].text ?? '';
+check('commands: the assistant runs the command it chose, and the command answers in the chat', pinged.text.includes('Pong') && pinged.sent.length === 1, pinged.text);
+check('commands: the model is offered what this person may type', ['ping', 'song', 'yta', 'weather', 'sticker', 'translate'].every(name => offeredNames.includes(name)) && toolRequest.tools[0].functionDeclarations[0].name === 'run_command', offeredNames.length);
+check('commands: owner, group and AI commands are not offered to a stranger in a private chat', !['mode', 'block', 'antidelete', 'kick', 'tagall', 'ai', 'summarize', 'dl'].some(name => offeredNames.includes(name)), offeredNames.filter(name => ['mode', 'block', 'antidelete', 'kick', 'tagall', 'ai', 'summarize', 'dl'].includes(name)));
+check('commands: the prompt lists them with their usage', toolRules.includes('run_command') && toolRules.includes('yta [std|mp3|small|voice|doc] <name or link>: ') && toolRules.includes('weather <city>'), toolRules.slice(-200));
+const worked = await say('work this out TOOL:calc|.calc (2+3)*4 SAYING', { from: noor, wait: 1200 });
+check('commands: a sentence from the model comes first, then the result; a repeated command name is tidied away', worked.texts[0] === 'One moment.' && worked.texts[1]?.includes('*20*') && worked.sent.length === 2, worked.texts);
+const toolMemory = await prisma.aiMessage.findMany({ where: { chatJid: noor, role: 'model' }, orderBy: { createdAt: 'asc' } });
+check('commands: the chat memory notes what was run', toolMemory[0]?.text === '[ran the command: ping]' && toolMemory[1]?.text === 'One moment.\n[ran the command: calc (2+3)*4]', toolMemory.map((row: any) => row.text));
+const three = await say('TOOL:ping| TOOL:uptime| TOOL:jid|', { wait: 1500 });
+check('commands: at most two per message', three.sent.length === 2 && three.texts[0].includes('Pong') && three.texts[1].includes('*Uptime:*'), three.texts);
+const again = await say('TOOL:ping|', { from: three.from, wait: 1000 });
+check('commands: cooldowns apply as if the person had typed the command', again.text.includes('Slow down'), again.text);
+const sneaky = await say('TOOL:mode|private', { wait: 1000 });
+check('commands: one that was not offered is not run, whatever the model asks for', getSettings().commands.mode === 'public' && sneaky.sent.length === 0, sneaky.texts);
+
+const ownerAsk = await say('.ai lock it down TOOL:genpass|12', { owner: true, wait: 1500 });
+const ownerNames: string[] = ownerAsk.calls[0]?.body.tools?.[0].functionDeclarations[0].parameters.properties.command.enum ?? [];
+check('commands: the ai command can use them too, with owner commands for the owner', ownerAsk.sent.length === 1 && ownerNames.includes('mode') && ownerNames.includes('antidelete') && !ownerNames.includes('ai'), { texts: ownerAsk.texts, owner: ownerNames.includes('mode') });
+
+await updateSettings({ commands: { mode: 'private' } });
+const locked = await say('TOOL:ping|');
+check('commands: in private mode a stranger is offered none', !locked.calls[0]?.body.tools && !locked.text.includes('Pong') && !locked.calls[0].body.systemInstruction.parts[0].text.includes('run_command'), locked.text);
+await updateSettings({ commands: { mode: 'public' }, downloads: { enabled: false } });
+const noDownloads = await say('TOOL:ping|', { wait: 1000 });
+const withoutDownloads: string[] = noDownloads.calls[0]?.body.tools[0].functionDeclarations[0].parameters.properties.command.enum;
+check('commands: download commands are not offered while downloads are off', !withoutDownloads.includes('song') && !withoutDownloads.includes('yta') && withoutDownloads.includes('weather'));
+await updateSettings({ downloads: { enabled: true }, commands: { disabled: ['ping'] } });
+const disabledPing = await say('TOOL:ping|', { wait: 1000 });
+check('commands: a switched-off command is neither offered nor run', !disabledPing.calls[0].body.tools[0].functionDeclarations[0].parameters.properties.command.enum.includes('ping') && disabledPing.sent.length === 0, disabledPing.texts);
+await updateSettings({ commands: { disabled: [] }, ai: { commands: false } });
+const plain = await say('TOOL:ping|');
+check('commands: with the setting off the assistant only talks', !plain.calls[0]?.body.tools && plain.text.includes('*Echo:* TOOL:ping|') && !plain.text.includes('Pong'), plain.text);
+await updateSettings({ ai: { enabled: toolsBefore.enabled, scope: toolsBefore.scope, commands: true } });
+
 // ================= voice notes =================
 const aiBefore = { ...getSettings().ai };
 await updateSettings({ ai: { enabled: true, scope: 'private', voice: 'Puck' } });
@@ -550,7 +610,7 @@ check('media: commands explain what they need', (await say('.blur')).text.includ
 
 // ================= download commands (no network needed) =================
 check('song / video: ask for a name or link', (await say('.song')).text.includes('song <name or link>') && (await say('.video')).text.includes('video <name or link>'));
-check('yta / ytv: list their formats', (await say('.yta')).text.includes('yta [std|mp3|small|voice|doc] <link>') && (await say('.ytv')).text.includes('ytv [360|480|720|1080|doc] <link>'));
+check('yta / ytv: list their formats', (await say('.yta')).text.includes('yta [std|mp3|small|voice|doc] <name or link>') && (await say('.ytv')).text.includes('ytv [360|480|720|1080|doc] <name or link>') && (await say('.yta mp3')).text.includes('yta [std|mp3|small|voice|doc]'));
 check('site commands accept only their own links', (await say('.fb https://www.youtube.com/watch?v=aqz-KE-bpKQ')).text.includes('Send a Facebook link') && (await say('.soundcloud')).text.includes('Send a SoundCloud link'));
 check('downloads: links to private addresses are refused', (await say('.tiktok https://tiktok.com.localhost/video')).text.includes('Send a TikTok link') && (await say('.song http://192.168.1.1/a')).text.includes('not a YouTube link'));
 await updateSettings({ downloads: { enabled: false } });

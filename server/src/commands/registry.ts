@@ -6,6 +6,7 @@ import { config } from '../config.js';
 import { scoped } from '../logger.js';
 import { getSettings } from '../settings.js';
 import { recordActivity } from '../features/activity.js';
+import { provideCommandTools, type OfferedCommand } from '../features/ai.js';
 import { contentOf, contextInfoOf, displayNumber, preferPn, senderIdsOf, textOf } from '../whatsapp/message-utils.js';
 import type { BotSession } from '../whatsapp/session.js';
 import { bold, command as commandText, fail, quote } from '../whatsapp/format.js';
@@ -194,11 +195,39 @@ function quotedOf(msg: WAMessage, jid: string): QuotedMessage | undefined {
 }
 
 /**
+ * The commands the sender of `msg` could run by typing them, here and now: what the AI
+ * assistant is allowed to use on their behalf. Nothing when commands are off for them.
+ */
+export async function commandsFor(bot: BotSession, msg: WAMessage): Promise<OfferedCommand[]> {
+  const settings = getSettings();
+  const jid = msg.key.remoteJid;
+  if (!settings.commands.enabled || !jid) return [];
+  const { senderIds, isOwner, isGroup, allowed } = await accessOf(bot, msg, jid);
+  if (!allowed) return [];
+  const group = isGroup ? await bot.groupMeta(jid) : undefined;
+  const isAdmin = group ? bot.isGroupAdmin(group, senderIds) : false;
+  const isBotAdmin = group ? bot.botIsAdmin(group) : false;
+  const downloads = settings.downloads.enabled && (isOwner || !settings.downloads.ownerOnly);
+  return [...commands.values()]
+    .filter(command => {
+      // The assistant is the AI: its own commands would only have it talk to itself.
+      if (command.category === 'ai' || settings.commands.disabled.includes(command.name)) return false;
+      if (command.category === 'download' && !downloads) return false;
+      if (command.ownerOnly && !isOwner) return false;
+      if ((command.groupOnly || command.adminOnly || command.botAdmin) && !isGroup) return false;
+      if (command.adminOnly && !isAdmin && !isOwner) return false;
+      return !(command.botAdmin && !isBotAdmin);
+    })
+    .map(command => ({ name: command.name, usage: command.usage, description: command.description }));
+}
+
+/**
  * Parse and run a command message.
- * @param chosen command text (without prefix) picked from a numbered menu; runs as if the sender had typed it
+ * @param chosen command text (without prefix) to run as if the sender had typed it
+ * @param origin where `chosen` comes from: a numbered menu, or the AI assistant acting for the sender
  * @returns true when the message was a command (whether or not it succeeded)
  */
-export async function handleCommand(bot: BotSession, msg: WAMessage, chosen?: string): Promise<boolean> {
+export async function handleCommand(bot: BotSession, msg: WAMessage, chosen?: string, origin: 'menu' | 'assistant' = 'menu'): Promise<boolean> {
   const settings = getSettings();
   const { prefix } = settings.commands;
   const jid = msg.key.remoteJid;
@@ -208,6 +237,7 @@ export async function handleCommand(bot: BotSession, msg: WAMessage, chosen?: st
   const body = chosen !== undefined ? `${prefix}${chosen}` : textOf(content).trim();
   if (!body.startsWith(prefix) || body.length === prefix.length) return false;
 
+  const fromMenu = chosen !== undefined && origin === 'menu';
   const [invoked = '', ...args] = body.slice(prefix.length).trim().split(/\s+/);
   const command = findCommand(invoked);
   if (!command || settings.commands.disabled.includes(command.name)) return false;
@@ -241,7 +271,7 @@ export async function handleCommand(bot: BotSession, msg: WAMessage, chosen?: st
     text: body.slice(prefix.length).trim().slice(invoked.length).trim(),
     mentions: (contextInfoOf(content)?.mentionedJid ?? []).map(id => jidNormalizedUser(id)),
     // A menu choice quotes the menu itself, which is not something for the command to act on.
-    quoted: chosen !== undefined ? undefined : quotedOf(msg, jid),
+    quoted: fromMenu ? undefined : quotedOf(msg, jid),
     settings,
     log: scoped(`cmd:${command.name}`),
     reply: value => bot.send(jid, toContent(value), { quoted: msg }),
@@ -271,7 +301,7 @@ export async function handleCommand(bot: BotSession, msg: WAMessage, chosen?: st
 
   // Picking a number from a menu is the next step of something already started,
   // so it neither waits for a cooldown nor starts one.
-  if (command.cooldown && !isOwner && chosen === undefined) {
+  if (command.cooldown && !isOwner && !fromMenu) {
     const key = `${command.name}:${ctx.sender}`;
     const readyAt = cooldowns.get(key) ?? 0;
     if (readyAt > Date.now()) {
@@ -286,7 +316,8 @@ export async function handleCommand(bot: BotSession, msg: WAMessage, chosen?: st
 
   try {
     await command.execute(ctx);
-    recordActivity(bot.id, 'command', `${prefix}${command.name} used by ${msg.pushName?.trim() || displayNumber(ctx.sender)}`, {
+    const who = msg.pushName?.trim() || displayNumber(ctx.sender);
+    recordActivity(bot.id, 'command', `${prefix}${command.name} ${origin === 'assistant' && chosen !== undefined ? `run by the assistant for ${who}` : `used by ${who}`}`, {
       detail: ctx.text.slice(0, 200) || undefined,
       chat: jid
     });
@@ -296,3 +327,6 @@ export async function handleCommand(bot: BotSession, msg: WAMessage, chosen?: st
   }
   return true;
 }
+
+// The AI assistant uses commands through these two functions (see features/ai.ts).
+provideCommandTools({ available: commandsFor, run: (bot, msg, text) => handleCommand(bot, msg, text, 'assistant') });

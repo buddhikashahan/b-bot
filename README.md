@@ -223,6 +223,13 @@ commands are answered by the model (`gemini-3.5-flash` by default).
   Gemini's voices (`.tts puck Hello`), in whatever language the text is written. `.translate sinhala Good morning`
   translates with the model. Without a key, or while Google is busy, both fall back to free services
   (Google Translate's voice, MyMemory) with shorter length limits.
+- **Using commands.** The assistant can act, not only talk: ask it to "download Lelena as MP3", "search
+  YouTube for lofi mixes" or "what's the weather in Kandy" and it runs the matching command (`.yta mp3
+  lelena`, `.yts lofi mixes`, `.weather Kandy`) through Gemini function calling; the command then answers in
+  the chat as usual. This works in automatic replies and with `.ai`. It can only use commands the person
+  asking could type themselves: owner commands for owners, admin commands for group admins, none at all
+  for strangers in private mode, and never a command you have switched off. Cooldowns apply, at most two
+  commands run per message, and the switch is **Assistant > Use the bot's commands**.
 - **Voice notes.** When someone sends a voice note the assistant listens to it and replies with a voice
   note in the language they spoke (typically 10 to 20 seconds later), remembering what was said like any
   other message. The voice is chosen on the **Assistant** page, where listening and spoken replies can
@@ -256,8 +263,8 @@ and stay answerable for a day.
 its thumbnail and a numbered choice of formats, the usual ones first: audio that plays in the chat, audio
 as a document, MP3 (192 kbps), a small 64 kbps file, a voice note, video at 360p / 480p / 720p / 1080p, or
 video as a document. `.play` skips
-the question and sends the audio straight away; `.yta mp3 <link>` and `.ytv 480 <link>` name the format
-directly; `.thumb` fetches a thumbnail; `.yts` searches YouTube. `.fb`, `.tiktok`, `.insta`, `.x`, `.pin`,
+the question and sends the audio straight away; `.yta mp3 <name or link>` and `.ytv 480 <name or link>` name
+the format directly; `.thumb` fetches a thumbnail; `.yts` searches YouTube. `.fb`, `.tiktok`, `.insta`, `.x`, `.pin`,
 `.threads`, `.snap`, `.reddit`, `.soundcloud`, `.vimeo`, `.dailymotion`, `.twitch`, `.bilibili` and `.likee`
 take a link from that service; add `audio` for the sound only or `doc` to get a file. The work is done by
 [yt-dlp](https://github.com/yt-dlp/yt-dlp), which B-Bot downloads into `data/bin` the first time it is

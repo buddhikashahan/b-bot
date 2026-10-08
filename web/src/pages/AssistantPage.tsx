@@ -369,6 +369,12 @@ export function AssistantPage() {
               onChange={images => saveSettings('ai', { images })}
             />
             <Toggle
+              label="Use the bot's commands"
+              description={`Lets the assistant act on requests like "download that song as MP3" or "what's the weather in Kandy" by running the matching command, also from ${settings.commands.prefix}ai. It can only use commands the person asking could type themselves, so owner and admin commands stay with owners and admins.`}
+              checked={ai.commands}
+              onChange={commands => saveSettings('ai', { commands })}
+            />
+            <Toggle
               label="Listen to voice notes"
               description="When someone sends a voice note, the assistant listens to it and answers what was said."
               checked={ai.voiceNotes}

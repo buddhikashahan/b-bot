@@ -38,6 +38,8 @@ const HISTORY_WINDOW_MS = 24 * 60 * 60 * 1000;
 const HISTORY_KEEP_MS = 7 * 24 * 60 * 60 * 1000;
 /** At most this many automatic answers per chat per minute, so two bots cannot talk forever. */
 const MAX_REPLIES_PER_MINUTE = 8;
+/** Commands the assistant may start for one message. */
+const MAX_COMMANDS_PER_REPLY = 2;
 /** Longer voice notes are left alone: they cost a lot to process and are rarely meant for a bot. */
 const MAX_VOICE_SECONDS = 300;
 
@@ -59,6 +61,15 @@ const VOICE_RULES =
 const SPOKEN_RULES =
   'Your answer will be read aloud to them, so ignore the formatting rules above: write plain spoken sentences in the language they spoke, ' +
   'at most about 70 words, with no lists, emoji, symbols or markup.';
+
+/** Added when the assistant may use the bot's commands; the list of commands follows it. */
+const COMMAND_RULES =
+  "You can use this bot's commands for the person by calling the run_command function. " +
+  'Call it when they ask for something a command does: downloading a song or video, searching, weather, stickers, translations, reminders and so on. ' +
+  'The command sends its own result to the chat, so never repeat, describe or invent its output: reply with nothing, or with one short sentence. ' +
+  'Answer ordinary conversation and questions yourself, without a command. ' +
+  'run_command is the only way you can do things: never say that something was sent, downloaded or done unless you called it in this reply. ' +
+  'Notes in square brackets in your earlier replies were added by the system; never write such notes yourself.';
 
 export type AiErrorKind = 'no-key' | 'bad-key' | 'model' | 'busy' | 'slow' | 'blocked' | 'network' | 'other';
 
@@ -128,10 +139,54 @@ interface Turn {
 }
 
 interface GenerateResponse {
-  candidates?: { content?: { parts?: { text?: string; thought?: boolean }[] }; finishReason?: string }[];
+  candidates?: { content?: { parts?: { text?: string; thought?: boolean; functionCall?: { name?: string; args?: Record<string, unknown> } }[] }; finishReason?: string }[];
   promptFeedback?: { blockReason?: string };
   error?: { message?: string; status?: string };
 }
+
+/** A command of the bot, as described to the model. */
+export interface OfferedCommand {
+  name: string;
+  /** "song <name or link>" */
+  usage?: string;
+  description: string;
+}
+
+/** A command the model asked to run. */
+export interface CommandCall {
+  command: string;
+  arguments: string;
+}
+
+interface Answer {
+  text: string;
+  calls: CommandCall[];
+}
+
+const RUN_COMMAND = 'run_command';
+
+/** The one function the model gets: "run this command with these words after it". */
+function commandTool(offered: OfferedCommand[]) {
+  return {
+    functionDeclarations: [
+      {
+        name: RUN_COMMAND,
+        description: 'Run one of the bot\'s commands for the person, exactly as if they had typed it. The command sends its result to the chat by itself.',
+        parameters: {
+          type: 'object',
+          properties: {
+            command: { type: 'string', enum: offered.map(item => item.name), description: 'The command name, without a prefix.' },
+            arguments: { type: 'string', description: 'What follows the command name, as the person would type it. Leave empty when the command needs nothing.' }
+          },
+          required: ['command']
+        }
+      }
+    ]
+  };
+}
+
+/** "song <name or link>: Find a song..." */
+const catalogue = (offered: OfferedCommand[]) => offered.map(item => `${item.usage ?? item.name}: ${item.description}`).join('\n');
 
 async function call<T>(path: string, key: string, body: unknown, timeoutMs: number, cancel?: AbortSignal): Promise<T> {
   let response: Response;
@@ -174,7 +229,15 @@ async function call<T>(path: string, key: string, body: unknown, timeoutMs: numb
 const withoutThinkingControl = new Set<string>();
 
 /** One request to one model. */
-async function generateWith(options: { key: string; model: string; system: string; turns: Turn[]; timeoutMs: number; cancel?: AbortSignal }): Promise<string> {
+async function generateWith(options: {
+  key: string;
+  model: string;
+  system: string;
+  turns: Turn[];
+  commands?: OfferedCommand[];
+  timeoutMs: number;
+  cancel?: AbortSignal;
+}): Promise<Answer> {
   const path = `/models/${encodeURIComponent(options.model)}:generateContent`;
   const request = (thinking: boolean) =>
     call<GenerateResponse>(
@@ -183,6 +246,7 @@ async function generateWith(options: { key: string; model: string; system: strin
       {
         systemInstruction: { parts: [{ text: options.system }] },
         contents: options.turns,
+        ...(options.commands?.length ? { tools: [commandTool(options.commands)] } : {}),
         generationConfig: {
           // Thinking is billed against this limit too, so leave room for it and the answer.
           maxOutputTokens: 4096,
@@ -208,15 +272,22 @@ async function generateWith(options: { key: string; model: string; system: strin
   }
 
   const candidate = data.candidates?.[0];
+  const parts = candidate?.content?.parts ?? [];
   // Newer models interleave their reasoning as "thought" parts; only the answer is for the chat.
-  const text = (candidate?.content?.parts ?? [])
+  const text = parts
     .filter(part => !part.thought && part.text)
     .map(part => part.text)
     .join('')
     .trim();
-  if (text) return text;
+  const calls = parts
+    .filter(part => part.functionCall?.name === RUN_COMMAND && typeof part.functionCall.args?.command === 'string')
+    .map(part => ({ command: String(part.functionCall!.args!.command), arguments: String(part.functionCall!.args!.arguments ?? '') }));
+  if (text || calls.length) return { text, calls };
   if (data.promptFeedback?.blockReason || candidate?.finishReason === 'SAFETY' || candidate?.finishReason === 'PROHIBITED_CONTENT') {
     throw new AiError('blocked', "The AI declined to answer that because of Google's safety filters.");
+  }
+  if (candidate?.finishReason === 'MALFORMED_FUNCTION_CALL') {
+    throw new AiError('other', 'The AI tried to use a command but got it wrong. Try saying it another way.');
   }
   if (candidate?.finishReason === 'MAX_TOKENS') {
     throw new AiError('other', 'The AI used up its answer length while thinking. Choose a faster answer speed on the AI assistant page.');
@@ -230,7 +301,7 @@ const coolingDown = new Map<string, number>();
 /** Capacity problems are the only failures another model can fix; a bad key or a safety block would fail there too. */
 const isCapacityProblem = (error: unknown): error is AiError => error instanceof AiError && (error.kind === 'busy' || error.kind === 'slow');
 
-type Outcome = { model: string; text: string } | { model: string; error: unknown };
+type Outcome = ({ model: string } & Answer) | { model: string; error: unknown };
 
 /**
  * Ask the chosen model, with the backup model as a safety net. Newer models are
@@ -241,7 +312,7 @@ type Outcome = { model: string; text: string } | { model: string; error: unknown
  * backup is asked as well and whichever answers first wins; the other request
  * is cancelled. A model that failed is tried last for the next few minutes.
  */
-export async function generate(options: { key: string; system: string; turns: Turn[] }): Promise<{ text: string; model: string }> {
+export async function generate(options: { key: string; system: string; turns: Turn[]; commands?: OfferedCommand[] }): Promise<{ model: string } & Answer> {
   const settings = getSettings().ai;
   const chain = [...new Set([settings.model, settings.fallbackModel].filter(Boolean))];
   // Models that failed recently go to the back of the queue rather than out of it:
@@ -253,10 +324,10 @@ export async function generate(options: { key: string; system: string; turns: Tu
   const cancelSecond = new AbortController();
   const attempt = (model: string, timeoutMs: number, cancel: AbortSignal): Promise<Outcome> =>
     generateWith({ ...options, model, timeoutMs, cancel }).then(
-      text => ({ model, text }),
+      answer => ({ model, ...answer }),
       error => ({ model, error })
     );
-  const succeed = (outcome: { model: string; text: string }) => {
+  const succeed = (outcome: { model: string } & Answer) => {
     coolingDown.delete(outcome.model);
     status.lastModel = outcome.model;
     status.notice =
@@ -516,6 +587,47 @@ export interface Question {
   stateless?: boolean;
   /** Replaces the owner's persona for task commands. */
   instruction?: string;
+  /**
+   * The message being answered. With it (and the setting on) the assistant may run the
+   * bot's commands for its sender; without it there is nobody to run them for.
+   */
+  msg?: WAMessage;
+}
+
+/**
+ * How the assistant reaches the bot's commands. The command registry supplies this at start-up:
+ * it knows the commands and already imports this module, so the dependency points one way.
+ */
+export interface CommandTools {
+  /** The commands the sender of `msg` could type themselves, here and now. */
+  available(bot: BotSession, msg: WAMessage): Promise<OfferedCommand[]>;
+  /** Run `text` ("yta mp3 lelena") as if the sender of `msg` had typed it as a command. */
+  run(bot: BotSession, msg: WAMessage, text: string): Promise<unknown>;
+}
+let commandTools: CommandTools | undefined;
+export function provideCommandTools(tools: CommandTools): void {
+  commandTools = tools;
+}
+
+/** "yta" + ".yta mp3 lelena" (models sometimes repeat the name) becomes "yta mp3 lelena". */
+function commandLine(call: CommandCall): string {
+  const words = call.arguments.replace(/\s+/g, ' ').trim().slice(0, 500);
+  const repeated = new RegExp(`^\\W{0,3}${call.command.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(\\s+|$)`, 'i');
+  return `${call.command} ${words.replace(repeated, '')}`.trim();
+}
+
+/**
+ * Run the commands the assistant chose. Each one answers in the chat by itself, with the same
+ * checks (owner, admin, cooldown) as when the person types it.
+ */
+export async function runCommands(bot: BotSession, msg: WAMessage, commands: string[]): Promise<void> {
+  for (const text of commands) {
+    try {
+      await commandTools?.run(bot, msg, text);
+    } catch (err) {
+      log.error({ err }, `the assistant could not run "${text.split(' ')[0]}"`);
+    }
+  }
 }
 
 /** Ask the model, with the chat's recent history as context, and remember the exchange. */
@@ -539,8 +651,11 @@ export function toSpeech(text: string): string {
     .trim();
 }
 
-/** `ask`, also returning what the model heard when the question was a voice note. */
-export async function converse(bot: BotSession, question: Question): Promise<{ answer: string; heard?: string }> {
+/**
+ * `ask`, also returning what the model heard when the question was a voice note, and the
+ * commands it wants run (see `runCommands`): the caller sends the answer first, then runs them.
+ */
+export async function converse(bot: BotSession, question: Question): Promise<{ answer: string; heard?: string; commands: string[] }> {
   const key = await getApiKey();
   if (!key) throw new AiError('no-key', 'The AI assistant is not set up yet. The owner can add a Gemini API key in the dashboard.');
   const settings = getSettings().ai;
@@ -553,10 +668,13 @@ export async function converse(bot: BotSession, question: Question): Promise<{ a
   ]
     .filter(Boolean)
     .join(' ');
+  // Commands are for conversation, not for the one-off tasks (summarise, translate...) that set their own instruction.
+  const offered = settings.commands && question.msg && commandTools && !question.instruction ? await commandTools.available(bot, question.msg) : [];
   const system = [
     question.instruction ? `${question.instruction}\n\n${HOUSE_RULES}` : systemPrompt(context),
     question.voice ? VOICE_RULES : '',
-    question.spoken ? SPOKEN_RULES : ''
+    question.spoken ? SPOKEN_RULES : '',
+    offered.length ? `${COMMAND_RULES}\n\nThe commands, with what follows each name:\n${catalogue(offered)}` : ''
   ]
     .filter(Boolean)
     .join('\n\n');
@@ -570,9 +688,14 @@ export async function converse(bot: BotSession, question: Question): Promise<{ a
 
   const history = question.stateless ? [] : await recall(bot.id, question.chatJid, settings.historyMessages);
   try {
-    const { text: raw, model } = await generate({ key, system, turns: [...history, { role: 'user', parts }] });
+    const { text: raw, model, calls } = await generate({ key, system, turns: [...history, { role: 'user', parts }], commands: offered });
     const reply = question.voice ? splitHeard(raw) : { answer: raw, heard: undefined };
     const answer = question.spoken ? toSpeech(reply.answer) : toWhatsApp(reply.answer);
+    // Only what was offered, however the model spells it, and not a flood of them.
+    const commands = calls
+      .filter(item => offered.some(command => command.name === item.command.toLowerCase()))
+      .slice(0, MAX_COMMANDS_PER_REPLY)
+      .map(item => commandLine({ ...item, command: item.command.toLowerCase() }));
     lastAnswerModel = model;
     status.lastReplyAt = Date.now();
     status.lastError = null;
@@ -583,12 +706,13 @@ export async function converse(bot: BotSession, question: Question): Promise<{ a
         question.chatJid,
         [
           { role: 'user', text: question.group && question.voice ? `${who}: ${said}` : said },
-          { role: 'model', text: answer }
+          // The note keeps later turns aware of what was done; the rules tell the model not to imitate it.
+          { role: 'model', text: [answer, ...commands.map(text => `[ran the command: ${text}]`)].filter(Boolean).join('\n') }
         ],
         settings.historyMessages
       );
     }
-    return { answer, heard: reply.heard };
+    return { answer, heard: reply.heard, commands };
   } catch (error) {
     const message = error instanceof AiError ? error.message : 'Unexpected error while asking the AI.';
     status.lastError = { message, at: Date.now() };
@@ -649,20 +773,23 @@ export async function handleAssistant(bot: BotSession, msg: WAMessage): Promise<
     const group = isGroup ? ((await bot.groupMeta(jid))?.subject ?? 'a group') : undefined;
     // Strip the @mention of the bot itself so it does not read as part of the question.
     const question = text.replace(/@\d{5,}/g, '').trim();
-    const { answer, heard } = await converse(bot, {
+    const { answer, heard, commands } = await converse(bot, {
       chatJid: jid,
       text: question,
       image: hasImage ? media : undefined,
       voice: voiceNote ? media : undefined,
       spoken: aloud,
       senderName: msg.pushName ?? undefined,
-      group
+      group,
+      msg
     });
     const options = isGroup ? { quoted: msg } : undefined;
     // Spoken when they spoke; if the voice cannot be produced the words still arrive as text.
-    const speech = aloud ? await speak(answer, settings.voice).catch(err => void log.warn(`could not speak the answer: ${err instanceof Error ? err.message : err}`)) : undefined;
+    const speech = aloud && answer ? await speak(answer, settings.voice).catch(err => void log.warn(`could not speak the answer: ${err instanceof Error ? err.message : err}`)) : undefined;
     if (speech) await bot.send(jid, { audio: speech.audio, mimetype: speech.mimetype, ptt: speech.voiceNote }, options);
-    else await bot.send(jid, { text: answer }, options);
+    else if (answer) await bot.send(jid, { text: answer }, options);
+    // Not awaited: a download can take a minute, and the chat should not wait for it to be answered again.
+    if (commands.length) void runCommands(bot, msg, commands);
     recentReplies.get(jid)?.push(Date.now());
     const what = voiceNote ? (speech ? 'AI answered a voice note from' : 'AI replied to a voice note from') : 'AI replied to';
     recordActivity(bot.id, 'ai', `${what} ${msg.pushName?.trim() || 'a contact'}${group ? ` in ${group}` : ''}`, {
