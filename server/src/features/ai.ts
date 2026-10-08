@@ -7,6 +7,7 @@ import { getInternal, getSettings, setInternal } from '../settings.js';
 import { contentOf, contextInfoOf, textOf } from '../whatsapp/message-utils.js';
 import type { BotSession } from '../whatsapp/session.js';
 import { recordActivity } from './activity.js';
+import { speak } from './speech.js';
 
 // The AI assistant: Google Gemini over its REST API (no SDK needed).
 // Docs: https://ai.google.dev/api/generate-content
@@ -37,6 +38,8 @@ const HISTORY_WINDOW_MS = 24 * 60 * 60 * 1000;
 const HISTORY_KEEP_MS = 7 * 24 * 60 * 60 * 1000;
 /** At most this many automatic answers per chat per minute, so two bots cannot talk forever. */
 const MAX_REPLIES_PER_MINUTE = 8;
+/** Longer voice notes are left alone: they cost a lot to process and are rarely meant for a bot. */
+const MAX_VOICE_SECONDS = 300;
 
 export const DEFAULT_PROMPT =
   'You are a friendly, helpful assistant answering WhatsApp messages on behalf of the account owner. ' +
@@ -47,6 +50,15 @@ const HOUSE_RULES =
   'You are replying inside WhatsApp. Keep answers short unless asked for detail. ' +
   'Format only with WhatsApp markup: *bold*, _italic_, ~strikethrough~, `code`, and lines starting with "- " for lists. ' +
   'Never use Markdown headings, tables or double asterisks. Reply in the language the person writes in.';
+
+/** Added when the person spoke instead of typing. The first line lets the chat memory keep what was said. */
+const VOICE_RULES =
+  'The person sent the attached voice message. Begin your reply with one line "HEARD: " followed by what they said, ' +
+  'word for word in the language they spoke, then an empty line, then your answer.';
+/** Added when the answer goes back as a voice note. */
+const SPOKEN_RULES =
+  'Your answer will be read aloud to them, so ignore the formatting rules above: write plain spoken sentences in the language they spoke, ' +
+  'at most about 70 words, with no lists, emoji, symbols or markup.';
 
 export type AiErrorKind = 'no-key' | 'bad-key' | 'model' | 'busy' | 'slow' | 'blocked' | 'network' | 'other';
 
@@ -322,6 +334,75 @@ export async function verifyKey(key: string): Promise<string[]> {
   return listModels(key);
 }
 
+// --- speech -----------------------------------------------------------------------------------
+
+interface SpeechResponse {
+  candidates?: { content?: { parts?: { inlineData?: { mimeType?: string; data?: string } }[] } }[];
+}
+
+/** Used when the key's model list cannot be read. */
+const KNOWN_SPEECH_MODELS = ['gemini-2.5-flash-preview-tts'];
+const SPEECH_MODELS_TTL_MS = 6 * 60 * 60 * 1000;
+const SPEECH_TIMEOUT_MS = 60_000;
+let speechModels: { ids: string[]; at: number } | undefined;
+
+/** Voices offered by Gemini's speech models. */
+export const VOICES = ['Kore', 'Puck', 'Charon', 'Aoede', 'Fenrir', 'Leda', 'Orus', 'Zephyr'] as const;
+
+/** Text-to-speech models this key can use: the fast ones first, newest first. */
+async function listSpeechModels(key: string): Promise<string[]> {
+  if (speechModels && Date.now() - speechModels.at < SPEECH_MODELS_TTL_MS) return speechModels.ids;
+  let ids = KNOWN_SPEECH_MODELS;
+  try {
+    const data = await call<{ models?: { name: string; supportedGenerationMethods?: string[] }[] }>('/models?pageSize=200', key, undefined, LIST_TIMEOUT_MS);
+    const found = (data.models ?? [])
+      .filter(model => model.supportedGenerationMethods?.includes('generateContent'))
+      .map(model => model.name.replace(/^models\//, ''))
+      .filter(id => id.startsWith('gemini') && id.includes('tts'))
+      .sort((a, b) => Number(b.includes('flash')) - Number(a.includes('flash')) || b.localeCompare(a, 'en', { numeric: true }));
+    if (found.length) ids = found;
+  } catch {
+    // Keep the known model: the request itself will report what is wrong.
+  }
+  speechModels = { ids, at: Date.now() };
+  return ids;
+}
+
+/**
+ * Turn text into speech with Gemini.
+ * @returns raw 16-bit mono PCM and its sample rate
+ * @throws AiError when no key is saved or no speech model answers
+ */
+export async function synthesizeSpeech(text: string, voice: string = VOICES[0]): Promise<{ pcm: Buffer; sampleRate: number }> {
+  const key = await getApiKey();
+  if (!key) throw new AiError('no-key', 'The AI assistant is not set up yet. The owner can add a Gemini API key in the dashboard.');
+  let failure: unknown = new AiError('other', 'No speech model is available for this key.');
+  for (const model of (await listSpeechModels(key)).slice(0, 2)) {
+    try {
+      const data = await call<SpeechResponse>(
+        `/models/${encodeURIComponent(model)}:generateContent`,
+        key,
+        {
+          contents: [{ parts: [{ text }] }],
+          generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } } }
+        },
+        TIMEOUT_OVERRIDE_MS ?? SPEECH_TIMEOUT_MS
+      );
+      const audio = data.candidates?.[0]?.content?.parts?.find(part => part.inlineData?.data)?.inlineData;
+      if (audio?.data) {
+        // The mime type reads like "audio/L16;codec=pcm;rate=24000".
+        return { pcm: Buffer.from(audio.data, 'base64'), sampleRate: Number(/rate=(\d+)/.exec(audio.mimeType ?? '')?.[1]) || 24_000 };
+      }
+      failure = new AiError('other', 'The AI returned no audio for that text.');
+    } catch (error) {
+      failure = error;
+      // Another model cannot fix a rejected key or a missing connection.
+      if (error instanceof AiError && (error.kind === 'bad-key' || error.kind === 'network')) break;
+    }
+  }
+  throw failure;
+}
+
 // --- prompt and formatting ----------------------------------------------------------------------
 
 export function systemPrompt(context: string): string {
@@ -394,6 +475,10 @@ export interface Question {
   chatJid: string;
   text: string;
   image?: Buffer;
+  /** A voice note to listen to, as WhatsApp delivers it (Opus in Ogg). */
+  voice?: Buffer;
+  /** The answer will be read aloud: ask for plain spoken sentences and skip WhatsApp formatting. */
+  spoken?: boolean;
   senderName?: string;
   /** Group name, when the chat is a group. */
   group?: string;
@@ -405,6 +490,27 @@ export interface Question {
 
 /** Ask the model, with the chat's recent history as context, and remember the exchange. */
 export async function ask(bot: BotSession, question: Question): Promise<string> {
+  return (await converse(bot, question)).answer;
+}
+
+/** Split a reply to a voice note into what the model heard and what it answers. */
+export function splitHeard(raw: string): { heard?: string; answer: string } {
+  const match = /^\s*HEARD:[ \t]*(.*)\n+([\s\S]+)$/i.exec(raw);
+  if (match) return { heard: match[1].trim() || undefined, answer: match[2].trim() };
+  return { answer: raw.replace(/^\s*HEARD:.*$/im, '').trim() || raw.trim() };
+}
+
+/** Text fit for a text-to-speech voice: no markup, no emoji. */
+export function toSpeech(text: string): string {
+  return text
+    .replace(/[*_~`#>]/g, '')
+    .replace(/\p{Extended_Pictographic}|\uFE0F/gu, '')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim();
+}
+
+/** `ask`, also returning what the model heard when the question was a voice note. */
+export async function converse(bot: BotSession, question: Question): Promise<{ answer: string; heard?: string }> {
   const key = await getApiKey();
   if (!key) throw new AiError('no-key', 'The AI assistant is not set up yet. The owner can add a Gemini API key in the dashboard.');
   const settings = getSettings().ai;
@@ -417,32 +523,42 @@ export async function ask(bot: BotSession, question: Question): Promise<string> 
   ]
     .filter(Boolean)
     .join(' ');
-  const system = question.instruction ? `${question.instruction}\n\n${HOUSE_RULES}` : systemPrompt(context);
+  const system = [
+    question.instruction ? `${question.instruction}\n\n${HOUSE_RULES}` : systemPrompt(context),
+    question.voice ? VOICE_RULES : '',
+    question.spoken ? SPOKEN_RULES : ''
+  ]
+    .filter(Boolean)
+    .join('\n\n');
 
-  const spoken = question.group ? `${who}: ${question.text}` : question.text;
+  const typed = question.text || (question.voice ? '(voice message)' : '');
+  const spoken = question.group ? `${who}: ${typed}` : typed;
   const parts: Part[] = [];
   if (question.image) parts.push(await imagePart(question.image));
+  if (question.voice) parts.push({ inlineData: { mimeType: 'audio/ogg', data: question.voice.toString('base64') } });
   parts.push({ text: spoken || 'What is in this picture?' });
 
   const history = question.stateless ? [] : await recall(bot.id, question.chatJid, settings.historyMessages);
   try {
     const { text: raw, model } = await generate({ key, system, turns: [...history, { role: 'user', parts }] });
-    const answer = toWhatsApp(raw);
+    const reply = question.voice ? splitHeard(raw) : { answer: raw, heard: undefined };
+    const answer = question.spoken ? toSpeech(reply.answer) : toWhatsApp(reply.answer);
     lastAnswerModel = model;
     status.lastReplyAt = Date.now();
     status.lastError = null;
     if (!question.stateless) {
+      const said = question.voice ? `[voice message] ${reply.heard ?? ''}`.trim() : question.image ? `[sent a photo] ${spoken}`.trim() : spoken;
       await remember(
         bot.id,
         question.chatJid,
         [
-          { role: 'user', text: question.image ? `[sent a photo] ${spoken}`.trim() : spoken },
+          { role: 'user', text: question.group && question.voice ? `${who}: ${said}` : said },
           { role: 'model', text: answer }
         ],
         settings.historyMessages
       );
     }
-    return answer;
+    return { answer, heard: reply.heard };
   } catch (error) {
     const message = error instanceof AiError ? error.message : 'Unexpected error while asking the AI.';
     status.lastError = { message, at: Date.now() };
@@ -478,7 +594,10 @@ export async function handleAssistant(bot: BotSession, msg: WAMessage): Promise<
   const content = contentOf(msg.message);
   const text = textOf(content).trim();
   const hasImage = Boolean(content?.imageMessage) && settings.images;
-  if (!text && !hasImage) return false;
+  // Voice notes only: a forwarded song is not somebody talking to us.
+  const voiceNote = settings.voiceNotes && content?.audioMessage?.ptt ? content.audioMessage : undefined;
+  if (voiceNote && Number(voiceNote.seconds ?? 0) > MAX_VOICE_SECONDS) return false;
+  if (!text && !hasImage && !voiceNote) return false;
 
   if (isGroup && settings.groupTrigger === 'mention') {
     // In a group, only speak when spoken to: an @mention, or a reply to one of our messages.
@@ -492,16 +611,32 @@ export async function handleAssistant(bot: BotSession, msg: WAMessage): Promise<
 
   inFlight.add(jid);
   try {
-    await bot.sock?.sendPresenceUpdate('composing', jid).catch(() => {});
-    const image = hasImage ? await bot.download(msg).catch(() => undefined) : undefined;
+    const aloud = Boolean(voiceNote) && settings.voiceReplies;
+    await bot.sock?.sendPresenceUpdate(aloud ? 'recording' : 'composing', jid).catch(() => {});
+    const media = hasImage || voiceNote ? await bot.download(msg).catch(() => undefined) : undefined;
+    // A voice note that cannot be fetched leaves nothing to answer.
+    if (voiceNote && !media) return false;
     const group = isGroup ? ((await bot.groupMeta(jid))?.subject ?? 'a group') : undefined;
     // Strip the @mention of the bot itself so it does not read as part of the question.
     const question = text.replace(/@\d{5,}/g, '').trim();
-    const answer = await ask(bot, { chatJid: jid, text: question, image, senderName: msg.pushName ?? undefined, group });
-    await bot.send(jid, { text: answer }, isGroup ? { quoted: msg } : undefined);
+    const { answer, heard } = await converse(bot, {
+      chatJid: jid,
+      text: question,
+      image: hasImage ? media : undefined,
+      voice: voiceNote ? media : undefined,
+      spoken: aloud,
+      senderName: msg.pushName ?? undefined,
+      group
+    });
+    const options = isGroup ? { quoted: msg } : undefined;
+    // Spoken when they spoke; if the voice cannot be produced the words still arrive as text.
+    const speech = aloud ? await speak(answer, settings.voice).catch(err => void log.warn(`could not speak the answer: ${err instanceof Error ? err.message : err}`)) : undefined;
+    if (speech) await bot.send(jid, { audio: speech.audio, mimetype: speech.mimetype, ptt: speech.voiceNote }, options);
+    else await bot.send(jid, { text: answer }, options);
     recentReplies.get(jid)?.push(Date.now());
-    recordActivity(bot.id, 'ai', `AI replied to ${msg.pushName?.trim() || 'a contact'}${group ? ` in ${group}` : ''}`, {
-      detail: (question || '[photo]').slice(0, 200),
+    const what = voiceNote ? (speech ? 'AI answered a voice note from' : 'AI replied to a voice note from') : 'AI replied to';
+    recordActivity(bot.id, 'ai', `${what} ${msg.pushName?.trim() || 'a contact'}${group ? ` in ${group}` : ''}`, {
+      detail: (voiceNote ? (heard ?? '[voice note]') : question || '[photo]').slice(0, 200),
       chat: jid
     });
     return true;

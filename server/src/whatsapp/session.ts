@@ -7,9 +7,11 @@ import {
   jidNormalizedUser,
   makeCacheableSignalKeyStore,
   makeWASocket,
+  prepareWAMessageMedia,
   type AnyMessageContent,
   type ConnectionState,
   type GroupMetadata,
+  type MessageRelayOptions,
   type MiscMessageGenerationOptions,
   type WAMessage,
   type WAMessageKey,
@@ -399,11 +401,30 @@ export class BotSession {
     options?: MiscMessageGenerationOptions
   ): Promise<WAMessage | undefined> {
     const message = await this.requireSock().sendMessage(jid, content, options);
-    if (message?.key.id && message.message) {
-      this.sent.set(message.key.id, message.message);
-      if (this.sent.size > SENT_CACHE_SIZE) this.sent.delete(this.sent.keys().next().value!);
-    }
+    if (message?.key.id && message.message) this.remember(message.key.id, message.message);
     return message;
+  }
+
+  /**
+   * Send a message that is already in wire format. For the few kinds `send` cannot build
+   * (interactive messages with buttons).
+   * @returns the id of the sent message
+   */
+  async relay(jid: string, message: proto.IMessage, options: MessageRelayOptions): Promise<string> {
+    const id = await this.requireSock().relayMessage(jid, message, options);
+    this.remember(id, message);
+    return id;
+  }
+
+  /** Upload a picture for use inside a message built by hand (see `relay`). */
+  async uploadImage(image: Buffer): Promise<proto.Message.IImageMessage | undefined> {
+    const prepared = await prepareWAMessageMedia({ image }, { upload: this.requireSock().waUploadToServer });
+    return prepared.imageMessage ?? undefined;
+  }
+
+  private remember(id: string, message: proto.IMessage): void {
+    this.sent.set(id, message);
+    if (this.sent.size > SENT_CACHE_SIZE) this.sent.delete(this.sent.keys().next().value!);
   }
 
   /** Download and decrypt the media attached to a message. */

@@ -45,6 +45,36 @@ export function lookup(run: Command['execute']): Command['execute'] {
   };
 }
 
+interface DictionaryEntry {
+  word: string;
+  phonetic?: string;
+  meanings: { partOfSpeech: string; definitions: { definition: string; example?: string }[] }[];
+}
+
+/** A word's English meanings from Wiktionary, in the shape the dictionary service uses. */
+async function wiktionary(word: string): Promise<DictionaryEntry> {
+  type Page = Record<string, { partOfSpeech: string; definitions: { definition: string; examples?: string[] }[] }[]>;
+  const page = await getJson<Page>(`https://en.wiktionary.org/api/rest_v1/page/definition/${encodeURIComponent(word)}`);
+  // Definitions arrive as HTML fragments.
+  const plain = (html: string) =>
+    html
+      .replace(/<[^>]+>/g, '')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/\s+/g, ' ')
+      .trim();
+  const meanings = (page.en ?? [])
+    .map(item => ({
+      partOfSpeech: item.partOfSpeech.toLowerCase(),
+      definitions: item.definitions
+        .map(entry => ({ definition: plain(entry.definition), example: entry.examples?.[0] ? plain(entry.examples[0]) : undefined }))
+        .filter(entry => entry.definition)
+    }))
+    .filter(meaning => meaning.definitions.length);
+  if (meanings.length === 0) throw new LookupError('Nothing found for that.');
+  return { word, meanings };
+}
+
 // WMO weather interpretation codes used by Open-Meteo.
 const WEATHER: Record<number, string> = {
   0: '☀️ Clear sky',
@@ -122,13 +152,19 @@ export const infoCommands: Command[] = [
         await ctx.reply(usage(ctx.prefix, 'define <word>', 'define serendipity'));
         return;
       }
-      type Entry = { word: string; phonetic?: string; meanings: { partOfSpeech: string; definitions: { definition: string; example?: string }[] }[] };
-      const [entry] = await getJson<Entry[]>(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(word)}`);
+      let entry: DictionaryEntry;
+      try {
+        [entry] = await getJson<DictionaryEntry[]>(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(word)}`, 6000);
+      } catch (error) {
+        // That service is unreachable fairly often; Wiktionary knows the same words.
+        if (!(error instanceof LookupError) || error.message.startsWith('Nothing found')) throw error;
+        entry = await wiktionary(word);
+      }
       const lines = entry.meanings.slice(0, 3).flatMap(meaning => {
         const [first] = meaning.definitions;
         return [`${bold(meaning.partOfSpeech)}`, `- ${first.definition}`, first.example ? `  ${italic(`"${first.example}"`)}` : ''].filter(Boolean);
       });
-      await ctx.reply([card('📖', entry.word, [entry.phonetic ? code(entry.phonetic) : '']), '', lines.join('\n')].join('\n'));
+      await ctx.reply([card('📖', entry.word, [entry.phonetic ? code(entry.phonetic) : italic('English dictionary')]), '', lines.join('\n')].join('\n'));
     })
   },
   {
@@ -169,29 +205,6 @@ export const infoCommands: Command[] = [
           rain != null ? `☔ ${field('Chance of rain', `${rain}%`)}` : ''
         ])
       );
-    })
-  },
-  {
-    name: 'translate',
-    aliases: ['tr', 'trt'],
-    category: 'info',
-    description: 'Translate text (or the message you reply to) into another language.',
-    usage: 'translate <language code> <text>',
-    cooldown: 5,
-    execute: lookup(async ctx => {
-      const [target = '', ...rest] = ctx.args;
-      const text = rest.join(' ').trim() || ctx.quoted?.text?.trim() || '';
-      if (!/^[a-z]{2,3}(-[a-z]{2,4})?$/i.test(target) || !text) {
-        await ctx.reply(`${usage(ctx.prefix, 'translate <language code> <text>', 'translate si Good morning')}\n${note('Codes: en English, si Sinhala, ta Tamil, hi Hindi, ar Arabic, fr French, es Spanish, ja Japanese...')}`);
-        return;
-      }
-      if (text.length > 450) throw new LookupError('That is too long to translate in one go (450 characters at most).');
-      type Translation = { responseData: { translatedText: string }; responseStatus: number | string; matches?: { segment?: string }[] };
-      const result = await getJson<Translation>(
-        `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=${encodeURIComponent(`autodetect|${target.toLowerCase()}`)}`
-      );
-      if (Number(result.responseStatus) !== 200) throw new LookupError(`I could not translate into "${target}". Check the language code.`);
-      await ctx.reply([card('🌐', `Translation (${target.toLowerCase()})`, []), '', quote(result.responseData.translatedText)].join('\n'));
     })
   },
   {

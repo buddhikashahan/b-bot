@@ -26,8 +26,9 @@ FROM node:22-bookworm-slim
 ENV NODE_ENV=production \
     PORT=3000 \
     DATA_DIR=/app/data
+# fontconfig + DejaVu: the photo commands draw text (meme captions), and the slim image ships no fonts.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends openssl ca-certificates tini \
+  && apt-get install -y --no-install-recommends openssl ca-certificates tini fontconfig fonts-dejavu-core \
   && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 
@@ -39,6 +40,7 @@ COPY --from=build --chown=node:node /app/server/package.json ./server/
 COPY --from=build --chown=node:node /app/server/node_modules ./server/node_modules
 COPY --from=build --chown=node:node /app/server/dist ./server/dist
 COPY --from=build --chown=node:node /app/server/public ./server/public
+COPY --from=build --chown=node:node /app/server/assets ./server/assets
 COPY --from=build --chown=node:node /app/server/prisma ./server/prisma
 COPY --from=build --chown=node:node /app/server/scripts ./server/scripts
 RUN mkdir -p /app/data && chown node:node /app /app/server /app/data

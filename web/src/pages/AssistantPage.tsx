@@ -6,6 +6,9 @@ import { api, errorMessage } from '../lib/api';
 import { useLive } from '../lib/live';
 import type { AiStatus, ChatScope } from '../lib/types';
 
+/** Gemini's speech voices (the same list as VOICES in server/src/features/ai.ts). */
+const VOICES = ['Kore', 'Puck', 'Charon', 'Aoede', 'Fenrir', 'Leda', 'Orus', 'Zephyr'];
+
 /** Ready-made instructions people can start from. */
 const PERSONALITIES: { name: string; prompt: string }[] = [
   {
@@ -309,7 +312,7 @@ export function AssistantPage() {
                 onCommit={value => saveSettings('ai', { historyMessages: Math.min(40, Math.max(0, Math.round(Number(value)) || 0)) })}
               />
             </Field>
-            <Field label="Model" hint="gemini-3.8-flash is the smartest Flash model. gemini-3.5-flash-lite answers fastest and costs least.">
+            <Field label="Model" hint="gemini-3.5-flash is a good balance of quality and speed. The -lite models answer fastest and cost least.">
               <Select value={ai.model} onChange={event => saveSettings('ai', { model: event.target.value })}>
                 {modelChoices.map(model => (
                   <option key={model} value={model}>
@@ -365,6 +368,31 @@ export function AssistantPage() {
               checked={ai.images}
               onChange={images => saveSettings('ai', { images })}
             />
+            <Toggle
+              label="Listen to voice notes"
+              description="When someone sends a voice note, the assistant listens to it and answers what was said."
+              checked={ai.voiceNotes}
+              onChange={voiceNotes => saveSettings('ai', { voiceNotes })}
+            />
+            {ai.voiceNotes && (
+              <>
+                <Toggle
+                  label="Answer voice notes by voice"
+                  description="Replies with a voice note in the same language. Switch off to answer voice notes in text."
+                  checked={ai.voiceReplies}
+                  onChange={voiceReplies => saveSettings('ai', { voiceReplies })}
+                />
+                {ai.voiceReplies && (
+                  <div className="py-2">
+                    <p className="mb-2 text-sm font-medium">Voice</p>
+                    <Segmented label="Voice" value={ai.voice} onChange={voice => saveSettings('ai', { voice })} options={VOICES.map(voice => ({ value: voice, label: voice }))} />
+                    <p className="mt-2 text-xs text-muted">
+                      Also used for the voice note callers get (Protection page) and by <code className="font-mono">{settings.commands.prefix}tts</code>.
+                    </p>
+                  </div>
+                )}
+              </>
+            )}
           </div>
           <div className="mt-2 flex flex-wrap items-center justify-between gap-3 border-t border-line pt-4">
             <p className="text-sm text-muted">

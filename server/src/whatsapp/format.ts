@@ -42,14 +42,14 @@ export function field(label: string, value: string | number): string {
   return `${bold(`${label}:`)} ${value}`;
 }
 
-const CARD_END = '╰───────────────';
+const CARD_END = '╰━━━━━━━━━━━━━━━⬣';
 
 /**
- * A titled box, the bot's standard layout for anything with several facts:
+ * A titled frame, the bot's standard layout for anything with several facts:
  *
- *   ╭─「 🗑️ *Deleted message* 」
- *   │ 👤 *From:* ...
- *   ╰───────────────
+ *   ╭━━〔 🗑️ *Deleted message* 〕━━⬣
+ *   ┃ 👤 *From:* ...
+ *   ╰━━━━━━━━━━━━━━━⬣
  *
  * Falsy rows are skipped, so callers can write `condition && row`.
  */
@@ -57,8 +57,8 @@ export function card(icon: string, title: string, rows: Row[]): string {
   const body = rows
     .filter((row): row is string => Boolean(row))
     .flatMap(row => row.split('\n'))
-    .map(line => `│ ${line}`);
-  return [`╭─「 ${icon} ${bold(title)} 」`, ...body, CARD_END].join('\n');
+    .map(line => `┃ ${line}`);
+  return [`╭━━〔 ${icon} ${bold(title)} 〕━━⬣`, ...body, CARD_END].join('\n');
 }
 
 /** A command as people type it, e.g. `.song`. */

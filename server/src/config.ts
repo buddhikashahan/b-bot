@@ -68,7 +68,9 @@ export const config = {
     cookies: path.join(dataDir, 'cookies.txt'),
     runtimeConfig: path.join(dataDir, 'bbot.config.json'),
     secret: path.join(dataDir, 'secret.key'),
-    web: path.join(serverDir, 'public')
+    web: path.join(serverDir, 'public'),
+    /** Files shipped with the bot (the default cover image). */
+    assets: path.join(serverDir, 'assets')
   }
 };
 

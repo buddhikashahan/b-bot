@@ -1,7 +1,7 @@
 import { ArrowDown, ArrowUp, ListOrdered, Pencil, Plus, Trash2, X } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { WhatsAppText } from '../components/shared';
-import { Badge, Button, Card, Empty, Field, Input, Notice, PageHeader, Select, Spinner, Textarea, cx, useToast } from '../components/ui';
+import { Badge, Button, Card, Empty, Field, Input, Notice, PageHeader, Select, Spinner, Textarea, Toggle, cx, useToast } from '../components/ui';
 import { api, errorMessage } from '../lib/api';
 import { useLive } from '../lib/live';
 import type { ChatScope, CustomMenu, CustomMenuOption } from '../lib/types';
@@ -31,9 +31,9 @@ function blankMenu(): Draft {
 /** What the menu will look like in WhatsApp. */
 function Preview({ menu }: { menu: Draft }) {
   const lines = [
-    `╭─「 📋 *${menu.title || 'Menu title'}* 」`,
-    ...(menu.body ? menu.body.replaceAll('{name}', 'Kasun').split('\n').map(line => `│ ${line}`) : []),
-    '╰───────────────',
+    `╭━━〔 📋 *${menu.title || 'Menu title'}* 〕━━⬣`,
+    ...(menu.body ? menu.body.replaceAll('{name}', 'Kasun').split('\n').map(line => `┃ ${line}`) : []),
+    '╰━━━━━━━━━━━━━━━⬣',
     '',
     ...menu.options.map((option, index) => `*${index + 1}.* ${option.label || '…'}`),
     '',
@@ -205,7 +205,7 @@ function Editor({ initial, others, prefix, onSaved, onCancel }: { initial: Draft
 }
 
 export function MenusPage() {
-  const { settings } = useLive();
+  const { settings, saveSettings } = useLive();
   const toast = useToast();
   const [menus, setMenus] = useState<CustomMenu[]>();
   const [editing, setEditing] = useState<Draft>();
@@ -273,6 +273,23 @@ export function MenusPage() {
               void load();
             }}
           />
+        )}
+
+        {!editing && settings && (
+          <Card title="How menus are sent" description="Applies to every menu, including the bot's own.">
+            <Toggle
+              label="Tappable buttons (experimental)"
+              description="Sends menus as WhatsApp interactive messages instead of plain numbered text: buttons for short choices such as download formats, a pick-list for long ones, with the cover image or thumbnail on top. WhatsApp only supports these officially for Business API accounts, so they may not appear on every phone or on WhatsApp Web. If people see an empty or missing menu, turn this off. Replying with a number keeps working either way."
+              checked={settings.menus.buttons}
+              onChange={buttons => saveSettings('menus', { buttons })}
+            />
+            <Toggle
+              label="Cover image on the main menu"
+              description={`Shows the bot's cover picture above ${prefix}menu, ${prefix}botinfo and ${prefix}developer.`}
+              checked={settings.branding.coverOnMenu}
+              onChange={coverOnMenu => saveSettings('branding', { coverOnMenu })}
+            />
+          </Card>
         )}
 
         {!menus ? (

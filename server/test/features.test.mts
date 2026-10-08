@@ -185,7 +185,7 @@ await updateSettings({ commands: { enabled: true, mode: 'public', scope: 'all' }
 const run = async (text: string, jid: string, from?: string, fromMe = false, extra: object = {}) => {
   reset();
   await upsert(textMsg(`C${++n}`, jid, text, from, fromMe, extra), 450);
-  return sent.at(-1)?.content.text as string | undefined;
+  return (sent.at(-1)?.content.text ?? sent.at(-1)?.content.caption) as string | undefined;
 };
 check('public mode: anyone can use commands', (await run('.flip', ALICE))?.match(/Heads|Tails/));
 await run('.mode private', ALICE, undefined, true);
@@ -218,6 +218,27 @@ check('ignored group: owner can turn it back on from inside', !getSettings().acc
 check('.calc', (await run('.calc (2+3)*4', ALICE))?.includes('*20*'));
 check('.calc rejects code', (await run('.calc require("fs")', BOB))?.startsWith('❌'));
 check('.botinfo shows mode', (await run('.botinfo', ALICE))?.includes('*Mode:* Public'));
+check('.botinfo carries the cover image', Buffer.isBuffer(sent.at(-1)?.content.image));
+
+await run('.developer', '94700000031@s.whatsapp.net');
+const dev = sent[0]?.content.caption as string | undefined;
+check('.developer: details card with the cover image, number, website and GitHub', dev?.includes('*Developer*') && dev.includes('*Name:* Buddhika Shahan') && dev.includes('*WhatsApp:* +94766866297') && dev.includes('*Website:* buddhika.dev') && dev.includes('*GitHub:* github.com/buddhikashahan') && Buffer.isBuffer(sent[0]?.content.image), dev);
+check('.developer: the contact card follows', sent.length === 2 && sent[1].content.contacts?.contacts[0].vcard.includes('waid=94766866297:+94766866297'), sent.map(item => Object.keys(item.content)));
+await updateSettings({ branding: { developerNumber: '', developerWebsite: 'example.org/me/' } });
+const noNumber = await run('.developer', '94700000034@s.whatsapp.net');
+check('.developer: no number, no contact card; a bare domain is fine as a website', sent.length === 1 && !noNumber?.includes('WhatsApp') && noNumber?.includes('*Website:* example.org/me'), noNumber);
+await updateSettings({ branding: { botName: 'Nova', developerNumber: '94770000000', developerWebsite: 'https://buddhika.dev', coverOnMenu: false } });
+const devCard = await run('.dev', '94700000032@s.whatsapp.net');
+check('.developer: uses the number and bot name from the settings', sent[0]?.content.text?.includes('+94770000000') && sent[0].content.text.includes('Nova v') && devCard === undefined && sent[1]?.content.contacts?.contacts[0].vcard.includes('waid=94770000000:+94770000000'), sent.map(item => item.content));
+check('branding: the bot name is used on the menu, without a cover when switched off', (await run('.menu', '94700000033@s.whatsapp.net'))?.includes('🤖 *Nova*') && !sent[0].content.image);
+await updateSettings({ branding: { botName: 'B-Bot', developerNumber: '94766866297', coverOnMenu: true } });
+let badNumber = false;
+try {
+  await updateSettings({ branding: { developerNumber: 'call me' } });
+} catch {
+  badNumber = true;
+}
+check('branding: a developer number must be digits', badNumber);
 reset();
 await upsert(textMsg('P1', GROUP, '.poll Lunch? | Pizza | Rice', ALICE), 450);
 check('.poll creates a poll', sent.at(-1)?.content.poll?.name === 'Lunch?' && sent.at(-1)?.content.poll.values.length === 2, sent.at(-1));
@@ -263,6 +284,23 @@ check('away: private chat gets the away message', (await run('are you there', '9
 await sleep(5200);
 check('away: only once per cooldown', (await run('hello??', '94700000012@s.whatsapp.net')) === undefined);
 check('away: never in groups', (await run('anyone', GROUP, ALICE)) === undefined);
+// Something typed like a command is never answered as if it were conversation.
+check('away: a mistyped command gets a hint instead', (await run('.pnig', '94700000013@s.whatsapp.net'))?.includes('Did you mean `.ping`') && sent.length === 1, sent.map(item => item.content));
+check('away: an unknown command is left alone', (await run('.zzzzqqq hello', '94700000014@s.whatsapp.net')) === undefined);
+await updateSettings({ commands: { mode: 'private' } });
+check('away: a command refused by private mode stays silent', (await run('.ping', '94700000015@s.whatsapp.net')) === undefined);
+await updateSettings({ commands: { mode: 'public' } });
+check('away: a command that runs is answered once, by the command', (await run('.ping', '94700000016@s.whatsapp.net'))?.includes('Pong') && sent.length === 1);
+check('away: punctuation that merely starts with the prefix is still conversation', (await run('... hello?', '94700000017@s.whatsapp.net')) === 'Away, back soon Alice');
+// What WhatsApp delivers while a message is still being decrypted: a key and nothing else.
+reset();
+await upsert({ key: { remoteJid: '94700000018@s.whatsapp.net', id: `C${++n}`, fromMe: false }, messageStubType: 2, messageTimestamp: now(), pushName: 'Alice' });
+check('away: an empty placeholder message gets no answer', sent.length === 0, sent);
+reset();
+await upsert({ key: { remoteJid: '94700000018@s.whatsapp.net', id: `C${++n}`, fromMe: false }, message: { reactionMessage: { key: { remoteJid: '94700000018@s.whatsapp.net', id: 'X', fromMe: true }, text: '👍' } }, messageTimestamp: now(), pushName: 'Alice' });
+check('away: a reaction gets no answer', sent.length === 0, sent);
+check('away: the real message that follows does', (await run('.ping', '94700000018@s.whatsapp.net'))?.includes('Pong') && sent.length === 1);
+check('away: and so does ordinary text', (await run('are you around?', '94700000018@s.whatsapp.net')) === 'Away, back soon Alice');
 await updateSettings({ autoReply: { awayEnabled: false } });
 
 // --- calls ----------------------------------------------------------------------------------------

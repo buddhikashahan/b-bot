@@ -143,7 +143,7 @@ export const discoverCommands: Command[] = [
   },
   {
     name: 'crypto',
-    aliases: ['coin', 'price'],
+    aliases: ['price', 'coinprice'],
     category: 'info',
     description: 'Current price of a cryptocurrency.',
     usage: 'crypto <coin> [currency]',

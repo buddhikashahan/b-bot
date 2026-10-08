@@ -12,7 +12,7 @@ import {
   type WAMessage,
   type WASocket
 } from '@whiskeysockets/baileys';
-import { handleCommand } from '../commands/registry.js';
+import { handleCommand, handleUnknownCommand } from '../commands/registry.js';
 import { isChatBlocked, isUserBlocked } from '../features/access.js';
 import { cacheMessage, handleEdit, handleRevoke, lookupCachedMessage } from '../features/anti-delete.js';
 import { handleAssistant } from '../features/ai.js';
@@ -24,7 +24,7 @@ import { handleMenuTrigger, resolveMenuReply, sendCustomMenuById } from '../feat
 import { handleStatus } from '../features/status.js';
 import { handleViewOnce, handleViewOnceReply, handleWithheldViewOnce } from '../features/view-once.js';
 import { getSettings } from '../settings.js';
-import { senderIdsOf } from './message-utils.js';
+import { contentOf, kindOf, senderIdsOf } from './message-utils.js';
 import type { BotSession } from './session.js';
 
 export const lookupMessage = lookupCachedMessage;
@@ -102,6 +102,12 @@ async function handleMessage(bot: BotSession, msg: WAMessage, live: boolean): Pr
   if (await step('command', () => handleCommand(bot, msg))) return;
   if (await step('menu', () => handleMenuTrigger(bot, msg))) return;
   if (await step('keyword reply', () => handleKeywordReply(bot, msg))) return;
+  // Something typed like a command that did not run (a typo, a switched-off command, a sender
+  // who may not use commands) is still not conversation: no AI answer, no away message.
+  if (await step('unknown command', () => handleUnknownCommand(bot, msg))) return;
+  // Neither is a message with nothing in it for a person to read: reactions, protocol
+  // notices, and the empty placeholder WhatsApp delivers while a message is still being decrypted.
+  if (kindOf(contentOf(msg.message)) === 'other') return;
   if (await step('assistant', () => handleAssistant(bot, msg))) return;
   await step('away message', () => handleAwayMessage(bot, msg));
 }

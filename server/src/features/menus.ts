@@ -1,8 +1,9 @@
 import type { CustomMenu as CustomMenuRow } from '@prisma/client';
-import { isJidGroup, type WAMessage } from '@whiskeysockets/baileys';
+import { generateMessageIDV2, isJidGroup, type WAMessage, type proto } from '@whiskeysockets/baileys';
 import { z } from 'zod';
 import { prisma } from '../db.js';
 import { scoped } from '../logger.js';
+import { getSettings } from '../settings.js';
 import { bold, card, italic, quote } from '../whatsapp/format.js';
 import { contentOf, contextInfoOf, textOf } from '../whatsapp/message-utils.js';
 import type { BotSession } from '../whatsapp/session.js';
@@ -33,6 +34,23 @@ export type MenuAction =
 export interface MenuOption {
   label: string;
   action: MenuAction;
+  /** Short plain text for a tappable button. Without it the label is used, shortened to fit. */
+  button?: string;
+  /** When the menu goes out as a pick-list, also show this option as a button next to it. */
+  shortcut?: boolean;
+}
+
+/**
+ * How a menu looks when tappable menus are on:
+ * `buttons` the first options as buttons and the rest behind "More options", `list` a pick-list,
+ * `auto` buttons for up to three options and a pick-list otherwise.
+ */
+export type MenuStyle = 'auto' | 'buttons' | 'list';
+
+/** A button that opens a web address. */
+export interface LinkButton {
+  label: string;
+  url: string;
 }
 
 export const MENU_HINT = quote(italic('Reply to this message with a number'));
@@ -52,35 +70,220 @@ export async function registerPrompt(sessionId: string, chatJid: string, message
   });
 }
 
+/** Ids of the buttons we attach: "bbot:<menu message id>:<number>". */
+const BUTTON_PREFIX = 'bbot:';
+const BUTTON_TEXT_MAX = 20;
+/** WhatsApp shows three buttons under a message; any more are folded away and look cluttered. */
+const MAX_BUTTONS = 3;
+const MAX_SHORTCUTS = MAX_BUTTONS - 1;
+const TAP_HINT = quote(italic('Tap a button to choose'));
+
+interface FlowButton {
+  name: string;
+  buttonParamsJson: string;
+}
+
+/** Button and list labels are plain text: first line only, markup removed. */
+function plain(label: string): string {
+  return label
+    .split('\n')[0]
+    .replace(/[*_~`]/g, '')
+    .trim();
+}
+
+const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
+const buttonText = (option: MenuOption) => clip(option.button ?? plain(option.label), BUTTON_TEXT_MAX);
+/** Does the button say everything the label does? Then the numbered text can be left out. */
+const fitsButton = (option: MenuOption) => Boolean(option.button) || (!option.label.includes('\n') && plain(option.label).length <= BUTTON_TEXT_MAX);
+
+/**
+ * Send an interactive message: text with buttons under it, and optionally a picture on top.
+ *
+ * WhatsApp documents these only for the Business API. From an ordinary linked
+ * device they are sent in the same wire format and render on current phones,
+ * but nothing guarantees it, which is why this is an opt-in setting.
+ * @returns the id of the sent message
+ */
+async function relayInteractive(
+  bot: BotSession,
+  jid: string,
+  content: { messageId: string; text: string; buttons: FlowButton[]; image?: Buffer; quoted?: WAMessage }
+): Promise<string> {
+  // The picture rides in the header. Losing it is better than losing the whole message.
+  const picture = content.image
+    ? await bot.uploadImage(content.image).catch(err => {
+        log.warn({ err }, 'could not attach the picture to an interactive message');
+        return undefined;
+      })
+    : undefined;
+  const { quoted } = content;
+
+  const message: proto.IMessage = {
+    viewOnceMessage: {
+      message: {
+        messageContextInfo: { deviceListMetadata: {}, deviceListMetadataVersion: 2 },
+        interactiveMessage: {
+          ...(picture ? { header: { title: '', hasMediaAttachment: true, imageMessage: picture } } : {}),
+          body: { text: content.text },
+          footer: { text: getSettings().branding.botName },
+          nativeFlowMessage: { buttons: content.buttons },
+          ...(quoted ? { contextInfo: { stanzaId: quoted.key.id, participant: quoted.key.participant ?? quoted.key.remoteJid, quotedMessage: quoted.message } } : {})
+        }
+      }
+    }
+  };
+  return bot.relay(jid, message, {
+    messageId: content.messageId,
+    // Tells the recipient's app to treat the payload as a native-flow (button) message.
+    additionalNodes: [
+      {
+        tag: 'biz',
+        attrs: {},
+        content: [{ tag: 'interactive', attrs: { type: 'native_flow', v: '1' }, content: [{ tag: 'native_flow', attrs: { v: '9', name: 'mixed' } }] }]
+      }
+    ]
+  });
+}
+
+/**
+ * The buttons of a menu, never more than three:
+ * every option as a button when they fit, otherwise the leading ones (or the shortcuts of a
+ * pick-list) as buttons and one more that opens a list of the others.
+ */
+function menuButtons(options: MenuOption[], messageId: string, asButtons: boolean): FlowButton[] {
+  const numbered = options.map((option, index) => ({ option, index }));
+  const optionId = (index: number) => `${BUTTON_PREFIX}${messageId}:${index + 1}`;
+  const quickReply = (item: (typeof numbered)[number]): FlowButton => ({
+    name: 'quick_reply',
+    buttonParamsJson: JSON.stringify({ display_text: buttonText(item.option), id: optionId(item.index) })
+  });
+  if (asButtons && options.length <= MAX_BUTTONS) return numbered.map(quickReply);
+
+  const direct = asButtons ? numbered.slice(0, MAX_SHORTCUTS) : numbered.filter(item => item.option.shortcut).slice(0, MAX_SHORTCUTS);
+  const listed = asButtons ? numbered.slice(MAX_SHORTCUTS) : numbered;
+  const list: FlowButton = {
+    name: 'single_select',
+    buttonParamsJson: JSON.stringify({
+      title: asButtons ? 'More options' : 'Choose',
+      // Lists show at most ten rows per section.
+      sections: Array.from({ length: Math.ceil(listed.length / 10) }, (_, page) => ({
+        title: listed.length > 10 ? `Options ${page * 10 + 1} to ${Math.min(listed.length, page * 10 + 10)}` : 'Options',
+        rows: listed.slice(page * 10, page * 10 + 10).map(({ option, index }) => {
+          const [first, ...others] = option.label.split('\n');
+          // An option with its own button text is titled by it; what the label adds is the description.
+          const title = option.button ?? plain(first);
+          const extra = option.button && plain(first).startsWith(title) ? plain(first).slice(title.length) : option.button ? plain(first) : '';
+          return { title: clip(title, 24), description: clip(plain([extra, ...others].join(' ')), 70), id: optionId(index) };
+        })
+      }))
+    })
+  };
+  // Buttons first when they are the main choices; the list first when it is the menu itself.
+  return asButtons ? [...direct.map(quickReply), list] : [list, ...direct.map(quickReply)];
+}
+
 /**
  * Send a numbered menu and register it.
  * @param header everything above the options (usually a card)
+ * @param image shown above the menu (the menu becomes the image caption)
+ * @param style how it looks when tappable menus are switched on; plain text menus ignore it
  */
 export async function sendMenu(
   bot: BotSession,
   jid: string,
-  menu: { header: string; options: MenuOption[]; footer?: string; quoted?: WAMessage; mentions?: string[] }
+  menu: { header: string; options: MenuOption[]; footer?: string; quoted?: WAMessage; mentions?: string[]; image?: Buffer; style?: MenuStyle }
 ): Promise<void> {
   const options = menu.options.slice(0, MAX_OPTIONS);
   const text = [menu.header, '', numberedOptions(options), '', menu.footer ?? MENU_HINT].join('\n');
-  const sent = await bot.send(jid, { text, mentions: menu.mentions }, menu.quoted ? { quoted: menu.quoted } : undefined);
-  if (sent?.key.id) await registerPrompt(bot.id, jid, sent.key.id, options);
+
+  let messageId: string | undefined;
+  if (getSettings().menus.buttons) {
+    const asButtons = menu.style === 'buttons' || (menu.style !== 'list' && options.length <= MAX_BUTTONS);
+    try {
+      const id = generateMessageIDV2(bot.requireSock().user?.id);
+      messageId = await relayInteractive(bot, jid, {
+        messageId: id,
+        // Buttons that say it all replace the numbered text; replying with a number still works.
+        text: asButtons && options.every(fitsButton) ? [menu.header, '', TAP_HINT].join('\n') : text,
+        buttons: menuButtons(options, id, asButtons),
+        image: menu.image,
+        quoted: menu.quoted
+      });
+    } catch (err) {
+      log.warn({ err }, 'could not send an interactive menu; sending it as text');
+    }
+  }
+  if (!messageId) {
+    const content = menu.image ? { image: menu.image, caption: text, mentions: menu.mentions } : { text, mentions: menu.mentions };
+    const sent = await bot.send(jid, content, menu.quoted ? { quoted: menu.quoted } : undefined);
+    messageId = sent?.key.id ?? undefined;
+  }
+  if (messageId) await registerPrompt(bot.id, jid, messageId, options);
+}
+
+/**
+ * Send a card with link buttons under it (tappable menus only).
+ * @returns false when buttons are switched off or the send failed, so the caller can send its plain version
+ */
+export async function sendLinkCard(bot: BotSession, jid: string, content: { text: string; links: LinkButton[]; image?: Buffer; quoted?: WAMessage }): Promise<boolean> {
+  if (!getSettings().menus.buttons || content.links.length === 0) return false;
+  try {
+    await relayInteractive(bot, jid, {
+      messageId: generateMessageIDV2(bot.requireSock().user?.id),
+      text: content.text,
+      buttons: content.links.map(link => ({
+        name: 'cta_url',
+        buttonParamsJson: JSON.stringify({ display_text: clip(link.label, BUTTON_TEXT_MAX), url: link.url, merchant_url: link.url })
+      })),
+      image: content.image,
+      quoted: content.quoted
+    });
+    return true;
+  } catch (err) {
+    log.warn({ err }, 'could not send a card with link buttons; sending it as text');
+    return false;
+  }
 }
 
 export type MenuReply = { option: MenuOption } | { outOfRange: number };
 
+/** The id carried by a tapped button or picked list row, in any of the shapes WhatsApp uses. */
+function tappedId(message: proto.IMessage | null | undefined): string | undefined {
+  const content = contentOf(message);
+  if (!content) return undefined;
+  const flow = content.interactiveResponseMessage?.nativeFlowResponseMessage?.paramsJson;
+  if (flow) {
+    try {
+      const id = (JSON.parse(flow) as { id?: string }).id;
+      if (id) return id;
+    } catch {
+      // not ours
+    }
+  }
+  return (
+    content.templateButtonReplyMessage?.selectedId ??
+    content.buttonsResponseMessage?.selectedButtonId ??
+    content.listResponseMessage?.singleSelectReply?.selectedRowId ??
+    undefined
+  );
+}
+
 /**
- * Is this message a number answering one of our menus?
- * Matches a reply quoting the menu message, or in private chats a bare number
- * sent shortly after a menu.
+ * Is this message an answer to one of our menus?
+ * Matches a tapped button, a reply quoting the menu message with a number, or in
+ * private chats a bare number sent shortly after a menu.
  */
 export async function resolveMenuReply(bot: BotSession, msg: WAMessage): Promise<MenuReply | undefined> {
   const jid = msg.key.remoteJid;
+  if (!jid) return undefined;
   const content = contentOf(msg.message);
-  const text = textOf(content).trim();
-  if (!jid || !/^\d{1,2}$/.test(text)) return undefined;
 
-  const quotedId = contextInfoOf(content)?.stanzaId;
+  const tapped = tappedId(msg.message);
+  const viaButton = tapped?.startsWith(BUTTON_PREFIX) ? tapped.slice(BUTTON_PREFIX.length).split(':') : undefined;
+  const text = viaButton ? (viaButton[1] ?? '') : textOf(content).trim();
+  if (!/^\d{1,2}$/.test(text)) return undefined;
+
+  const quotedId = viaButton ? viaButton[0] : contextInfoOf(content)?.stanzaId;
   let prompt;
   if (quotedId) {
     prompt = await prisma.menuPrompt.findUnique({ where: { sessionId_messageId: { sessionId: bot.id, messageId: quotedId } } });

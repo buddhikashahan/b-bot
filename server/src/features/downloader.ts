@@ -31,6 +31,8 @@ export interface MediaInfo {
   uploader?: string;
   views?: number;
   site: string;
+  /** Poster / cover image, when the site provides one. */
+  thumbnail?: string;
 }
 
 export interface DownloadedMedia {
@@ -42,6 +44,15 @@ export interface DownloadedMedia {
   /** False when WhatsApp cannot play this container inline; send it as a document instead. */
   playable: boolean;
   cleanup: () => Promise<void>;
+}
+
+/** How to deliver audio: the site's own AAC stream, an MP3, or a small low-bitrate file. */
+export type AudioQuality = 'standard' | 'mp3' | 'small';
+
+export interface DownloadOptions {
+  audio?: AudioQuality;
+  /** Largest video height to fetch (360, 480, 720, 1080). Lower is used when it would not fit the size limit. */
+  maxHeight?: number;
 }
 
 export interface DownloadLimits {
@@ -65,7 +76,7 @@ function localBinary(): string {
   return path.join(config.paths.bin, releaseAsset() ?? 'yt-dlp');
 }
 
-function run(file: string, args: string[], timeoutMs: number): Promise<{ stdout: string; stderr: string }> {
+export function run(file: string, args: string[], timeoutMs: number): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     // execFile (no shell): arguments are passed as-is, so nothing a user types can be interpreted as a command.
     execFile(file, args, { timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024, windowsHide: true }, (error, stdout, stderr) => {
@@ -134,7 +145,7 @@ function ytDlp(): Promise<string> {
 let ffmpegChecked: Promise<string | undefined> | undefined;
 
 /** FFMPEG_PATH, then an ffmpeg on PATH, then the one shipped by the optional ffmpeg-static package. */
-function ffmpeg(): Promise<string | undefined> {
+export function ffmpeg(): Promise<string | undefined> {
   ffmpegChecked ??= (async () => {
     for (const candidate of [config.ffmpegPath, 'ffmpeg']) {
       if (candidate && (await works(candidate, '-version'))) return candidate;
@@ -219,12 +230,17 @@ interface RawEntry {
   view_count?: number;
   extractor_key?: string;
   ie_key?: string;
+  thumbnail?: string;
+  thumbnails?: { url?: string; width?: number }[];
   entries?: RawEntry[];
 }
 
 function toInfo(raw: RawEntry): MediaInfo {
   const site = raw.extractor_key ?? raw.ie_key ?? 'web';
   const url = raw.webpage_url ?? raw.original_url ?? (site.toLowerCase().startsWith('youtube') && raw.id ? `https://www.youtube.com/watch?v=${raw.id}` : raw.url) ?? '';
+  const isYouTube = site.toLowerCase().startsWith('youtube');
+  // Search results only list small thumbnails; YouTube's poster URL is predictable from the id.
+  const largest = [...(raw.thumbnails ?? [])].sort((a, b) => (b.width ?? 0) - (a.width ?? 0))[0]?.url;
   return {
     id: raw.id ?? '',
     title: raw.title?.trim() || 'Untitled',
@@ -232,7 +248,8 @@ function toInfo(raw: RawEntry): MediaInfo {
     durationSeconds: raw.duration ?? undefined,
     uploader: raw.channel ?? raw.uploader ?? undefined,
     views: raw.view_count ?? undefined,
-    site
+    site,
+    thumbnail: isYouTube && raw.id ? `https://i.ytimg.com/vi/${raw.id}/hqdefault.jpg` : (raw.thumbnail ?? largest)
   };
 }
 
@@ -258,13 +275,25 @@ export async function searchYouTube(query: string, limit = 8): Promise<MediaInfo
   }
 }
 
+/** Title, length, thumbnail... of the media behind a link, without downloading it. */
+export async function lookupMedia(url: string): Promise<MediaInfo> {
+  const bin = await ytDlp();
+  try {
+    const { stdout } = await run(bin, [...(await baseArgs()), '--no-playlist', '--playlist-items', '1', '--dump-single-json', url], LOOKUP_TIMEOUT_MS);
+    const raw = JSON.parse(stdout) as RawEntry;
+    return toInfo(raw.entries?.[0] ?? raw);
+  } catch (error) {
+    throw explain(error);
+  }
+}
+
 let active = 0;
 
 /**
  * Download one audio track or video.
  * @param url a page URL (validate it first: see `parseMediaUrl`)
  */
-export async function downloadMedia(url: string, kind: MediaKind, limits: DownloadLimits): Promise<DownloadedMedia> {
+export async function downloadMedia(url: string, kind: MediaKind, limits: DownloadLimits, options: DownloadOptions = {}): Promise<DownloadedMedia> {
   if (active >= MAX_CONCURRENT) throw new DownloadError('I am already busy with other downloads. Try again in a minute.');
   active++;
   const dir = await mkdtemp(path.join(os.tmpdir(), 'bbot-dl-'));
@@ -290,10 +319,25 @@ export async function downloadMedia(url: string, kind: MediaKind, limits: Downlo
       '--no-simulate'
     ];
     if (ffmpegPath && ffmpegPath !== 'ffmpeg') args.push('--ffmpeg-location', ffmpegPath);
+    /** Which streams to fetch and how to package them. */
+    let format: string[];
+    /** The same from a single file holding picture and sound: plainer, but the stream sites refuse least. */
+    let plain: string[] | undefined;
     if (kind === 'audio') {
       // AAC in an M4A file plays everywhere in WhatsApp. Sites that already serve AAC are copied
       // as-is; with ffmpeg anything else (or the sound of a video) is converted to it.
-      args.push(...(ffmpegPath ? ['-f', 'ba[ext=m4a]/ba/b', '-x', '--audio-format', 'm4a'] : ['-f', 'ba[ext=m4a]/ba[acodec^=mp4a]/ba/b']));
+      const quality = ffmpegPath ? (options.audio ?? 'standard') : 'standard';
+      const convert =
+        quality === 'mp3'
+          ? ['-x', '--audio-format', 'mp3', '--audio-quality', '192K']
+          : quality === 'small'
+            ? ['-x', '--audio-format', 'mp3', '--audio-quality', '64K']
+            : ffmpegPath
+              ? ['-x', '--audio-format', 'm4a']
+              : [];
+      const source = quality === 'small' ? 'wa[abr>=40]/ba/b' : ffmpegPath ? 'ba[ext=m4a]/ba/b' : 'ba[ext=m4a]/ba[acodec^=mp4a]/ba/b';
+      format = ['-f', source, ...convert];
+      if (ffmpegPath) plain = ['-f', 'b', ...convert];
     } else {
       // H.264 + AAC in MP4 is what WhatsApp plays inline. Merging separate streams needs ffmpeg;
       // without it, take the best file that already contains both.
@@ -301,14 +345,33 @@ export async function downloadMedia(url: string, kind: MediaKind, limits: Downlo
       // (leaving ~10% for the sound track) instead of failing on a long 720p video.
       const budget = Math.floor(limits.maxSizeMb * 0.9);
       const fitting = `bv*[filesize<${budget}M]+ba/bv*[filesize_approx<${budget}M]+ba/b[filesize<${limits.maxSizeMb}M]/b[filesize_approx<${limits.maxSizeMb}M]`;
-      args.push(
-        '-S',
-        'vcodec:h264,res:720,fps:30,acodec:m4a',
-        ...(ffmpegPath ? ['-f', `${fitting}/bv*+ba/b`, '--merge-output-format', 'mp4'] : ['-f', `b[filesize<${limits.maxSizeMb}M]/b`])
-      );
+      const preference = ['-S', `vcodec:h264,res:${options.maxHeight ?? 720},fps:30,acodec:m4a`];
+      format = [...preference, ...(ffmpegPath ? ['-f', `${fitting}/bv*+ba/b`, '--merge-output-format', 'mp4'] : ['-f', `b[filesize<${limits.maxSizeMb}M]/b`])];
+      if (ffmpegPath) plain = [...preference, '-f', `b[filesize<${limits.maxSizeMb}M]/b`];
     }
 
-    const { stdout } = await run(bin, [...args, url], DOWNLOAD_TIMEOUT_MS);
+    const fetch = async (how: string[]) => {
+      // Leftovers of a failed attempt must not be mistaken for the result.
+      for (const name of await readdir(dir)) await rm(path.join(dir, name), { force: true, recursive: true });
+      return run(bin, [...args, ...how, url], DOWNLOAD_TIMEOUT_MS);
+    };
+    // Video sites now and then refuse one stream of a perfectly available video ("403 Forbidden").
+    // It usually works on a second request, and failing that from the single-file version.
+    const refused = (error: unknown) => /HTTP Error 403/i.test((error as { stderr?: string }).stderr ?? '');
+    let stdout: string;
+    try {
+      ({ stdout } = await fetch(format));
+    } catch (first) {
+      if (!refused(first)) throw first;
+      log.warn('a stream was refused (HTTP 403); trying again');
+      try {
+        ({ stdout } = await fetch(format));
+      } catch (second) {
+        if (!refused(second) || !plain) throw second;
+        log.warn('refused again; fetching the single-file version instead');
+        ({ stdout } = await fetch(plain));
+      }
+    }
     const jsonLine = stdout.split('\n').find(line => line.startsWith('{'));
     if (!jsonLine) {
       // A real failure exits non-zero and lands in the catch below. Succeeding with
@@ -352,6 +415,15 @@ export async function downloadMedia(url: string, kind: MediaKind, limits: Downlo
 
 export const SITES = {
   youtube: ['youtube.com', 'youtu.be', 'music.youtube.com'],
+  soundcloud: ['soundcloud.com'],
+  reddit: ['reddit.com', 'redd.it'],
+  vimeo: ['vimeo.com'],
+  dailymotion: ['dailymotion.com', 'dai.ly'],
+  twitch: ['twitch.tv'],
+  threads: ['threads.net', 'threads.com'],
+  snapchat: ['snapchat.com'],
+  bilibili: ['bilibili.com', 'b23.tv'],
+  likee: ['likee.video', 'likee.com'],
   facebook: ['facebook.com', 'fb.watch', 'fb.com'],
   tiktok: ['tiktok.com'],
   instagram: ['instagram.com', 'instagr.am'],

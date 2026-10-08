@@ -1,4 +1,6 @@
-import { sendMenu, type MenuOption } from '../../features/menus.js';
+import { config } from '../../config.js';
+import { coverImage } from '../../features/branding.js';
+import { sendLinkCard, sendMenu, type LinkButton, type MenuOption } from '../../features/menus.js';
 import { bold, card, code, command, duration, fail, field, italic, note, quote } from '../../whatsapp/format.js';
 import { userPart } from '../../whatsapp/message-utils.js';
 import { listCommands } from '../registry.js';
@@ -48,7 +50,7 @@ function commandDetails(ctx: CommandContext, item: Listed): string {
 function menuHeader(ctx: CommandContext, count: number): string {
   const { mode, scope } = ctx.settings.commands;
   const where = { all: 'Everywhere', groups: 'Groups only', private: 'Private chats only' }[scope];
-  return card('🤖', 'B-Bot', [
+  return card('🤖', ctx.settings.branding.botName, [
     `👋 Hello, ${bold(ctx.senderName || `+${userPart(ctx.sender)}`)}`,
     `🔑 ${field('Mode', mode === 'public' ? 'Public' : 'Private')}`,
     `📍 ${field('Works in', where)}`,
@@ -115,12 +117,19 @@ export const generalCommands: Command[] = [
       // Main menu: numbered categories.
       await sendMenu(ctx.bot, ctx.jid, {
         header: menuHeader(ctx, available.length),
-        options: sections.map(section => ({
-          label: `${section.icon} ${section.title} ${italic(`(${section.items.length})`)}`,
-          action: { type: 'command', text: `menu ${section.words[0]}` }
-        })),
-        footer: quote(`${italic('Reply to this message with a number to open a category')}\n${code(`${ctx.prefix}menu all`)} ${italic('lists every command')}`),
-        quoted: ctx.msg
+        options: [
+          ...sections.map(
+            (section): MenuOption => ({
+              label: `${section.icon} ${section.title} ${italic(`(${section.items.length})`)}`,
+              action: { type: 'command', text: `menu ${section.words[0]}` }
+            })
+          ),
+          // With tappable menus this one is also a button beside the category list.
+          { label: `📜 All commands ${italic('on one page')}`, button: '📜 All commands', shortcut: true, action: { type: 'command', text: 'menu all' } }
+        ],
+        footer: quote(italic('Reply to this message with a number to open a category')),
+        quoted: ctx.msg,
+        image: await coverImage()
       });
     }
   },
@@ -157,7 +166,8 @@ export const generalCommands: Command[] = [
       const flag = (on: boolean) => (on ? '✅' : '❌');
       const where = { all: 'Everywhere', groups: 'Groups only', private: 'Private chats only' }[s.commands.scope];
       const parts = [
-        card('🤖', 'B-Bot is online', [
+        card('🤖', `${s.branding.botName} is online`, [
+          `🧬 ${field('Version', config.version)}`,
           `⏱️ ${field('Uptime', duration(process.uptime()))}`,
           `🔑 ${field('Mode', s.commands.mode === 'public' ? 'Public' : 'Private')}`,
           `📍 ${field('Works in', where)}`,
@@ -179,12 +189,13 @@ export const generalCommands: Command[] = [
           ])
         );
       }
-      await ctx.reply(parts.join('\n\n'));
+      const caption = parts.join('\n\n');
+      const image = await coverImage();
+      await ctx.reply(image ? { image, caption } : caption);
     }
   },
   {
     name: 'owner',
-    aliases: ['creator'],
     category: 'general',
     description: "Get the bot owner's contact.",
     cooldown: 10,
@@ -195,6 +206,57 @@ export const generalCommands: Command[] = [
       const name = me.name?.trim() || 'Bot owner';
       const vcard = ['BEGIN:VCARD', 'VERSION:3.0', `FN:${name}`, `TEL;type=CELL;waid=${number}:+${number}`, 'END:VCARD'].join('\n');
       await ctx.reply({ contacts: { displayName: name, contacts: [{ vcard }] } });
+    }
+  },
+  {
+    name: 'developer',
+    aliases: ['dev', 'creator', 'author', 'credits'],
+    category: 'general',
+    description: 'Who made this bot, and how to reach them.',
+    cooldown: 10,
+    async execute(ctx) {
+      const { botName, developerName, developerNumber, developerWebsite, developerLink } = ctx.settings.branding;
+      const name = developerName || 'The developer';
+      const bare = (url: string) => url.replace(/^https?:\/\/(www\.)?/i, '').replace(/\/$/, '');
+      // A bare domain such as "buddhika.dev" is a perfectly good way to write a website.
+      const address = (url: string) => (!url || /^https?:\/\//i.test(url) ? url : `https://${url}`);
+      const website = address(developerWebsite);
+      const profile = address(developerLink);
+      const caption = [
+        card('👨‍💻', 'Developer', [
+          `🧑 ${field('Name', name)}`,
+          `🤖 ${field('Bot', `${botName} v${config.version}`)}`,
+          developerNumber ? `📞 ${field('WhatsApp', `+${developerNumber}`)}` : '',
+          website ? `🌐 ${field('Website', bare(website))}` : '',
+          profile ? `💻 ${field(/github\.com/i.test(profile) ? 'GitHub' : 'Link', bare(profile))}` : '',
+          `⚙️ ${field('Built with', 'Node.js, TypeScript, Baileys')}`
+        ]),
+        '',
+        note(developerNumber ? 'Their contact card is below. Say hi!' : 'Questions, ideas or bugs? Use the links above.')
+      ].join('\n');
+      const image = await coverImage();
+      const links: LinkButton[] = [];
+      if (developerNumber) links.push({ label: '📞 Contact', url: `https://wa.me/${developerNumber}` });
+      if (website) links.push({ label: '🌐 Portfolio', url: website });
+      if (profile) links.push({ label: /github\.com/i.test(profile) ? '💻 GitHub' : '🔗 More', url: profile });
+      // Link buttons when tappable menus are on, the plain card otherwise.
+      if (!(await sendLinkCard(ctx.bot, ctx.jid, { text: caption, links, image, quoted: ctx.msg }))) {
+        await ctx.reply(image ? { image, caption } : caption);
+      }
+      if (developerNumber) {
+        const vcard = [
+          'BEGIN:VCARD',
+          'VERSION:3.0',
+          `FN:${name}`,
+          `ORG:${botName} developer;`,
+          `TEL;type=CELL;type=VOICE;waid=${developerNumber}:+${developerNumber}`,
+          developerLink ? `URL:${developerLink}` : '',
+          'END:VCARD'
+        ]
+          .filter(Boolean)
+          .join('\n');
+        await ctx.send({ contacts: { displayName: name, contacts: [{ vcard }] } });
+      }
     }
   },
   {

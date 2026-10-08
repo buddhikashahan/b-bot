@@ -20,6 +20,7 @@ check('url: lookalike domain rejected', !dl.parseMediaUrl('https://notyoutube.co
 check('url: localhost and private addresses rejected', ['http://localhost:3000/api', 'http://127.0.0.1/x', 'http://192.168.1.1/', 'http://10.0.0.5/', 'http://169.254.169.254/latest', 'http://[::1]/', 'http://intranet/'].every(u => !dl.parseMediaUrl(u)));
 check('url: non-http schemes rejected', !dl.parseMediaUrl('file:///etc/passwd') && !dl.parseMediaUrl('ftp://example.com/a') && !dl.parseMediaUrl('--exec=calc'));
 check('url: any public site allowed when unrestricted', dl.parseMediaUrl('https://vimeo.com/123'));
+check('url: the newer sites are known', ['https://soundcloud.com/a/b', 'https://www.reddit.com/r/x/comments/1', 'https://vimeo.com/1', 'https://dai.ly/x1', 'https://clips.twitch.tv/a', 'https://www.threads.net/@a/post/b', 'https://b23.tv/a'].every((u, i) => dl.parseMediaUrl(u, [(['soundcloud', 'reddit', 'vimeo', 'dailymotion', 'twitch', 'threads', 'bilibili'] as const)[i]])));
 check('findUrl', dl.findUrl('watch this https://fb.watch/abc?x=1 now') === 'https://fb.watch/abc?x=1');
 check('format: clock/compact/size', fmt.clock(187) === '3:07' && fmt.clock(3725) === '1:02:05' && fmt.compact(1_250_000) === '1.3M' && fmt.fileSize(5 * 1024 * 1024) === '5.0 MB');
 
@@ -38,6 +39,8 @@ console.log(`      installed yt-dlp ${after.ytDlpVersion} in ${Math.round((Date.
 const results = await dl.searchYouTube('big buck bunny official trailer blender', 5);
 check('search: returns results with title, link and duration', results.length >= 3 && results.every((r: any) => r.title && r.url.includes('youtube.com/watch')), results[0]);
 console.log(results.map((r: any) => `      ${fmt.clock(r.durationSeconds)}  ${r.title.slice(0, 60)}  (${r.uploader})`).join('\n'));
+
+check('search: every result has a thumbnail', results.every((r: any) => /^https:\/\/i\.ytimg\.com\/vi\/.+\/hqdefault\.jpg$/.test(r.thumbnail)), results[0]);
 
 // Pick the shortest hit to keep the test quick.
 const target = [...results].filter((r: any) => r.durationSeconds && r.durationSeconds < 240).sort((a: any, b: any) => a.durationSeconds - b.durationSeconds)[0] ?? results[0];
@@ -59,6 +62,40 @@ for (const kind of ['audio', 'video'] as const) {
     check(`download ${kind}`, false, (error as Error).message);
   }
 }
+
+// --- details, thumbnails and quality options -------------------------------------------------------
+const branding = await src('features/branding.ts');
+const looked = await dl.lookupMedia(target.url);
+check('lookup: details of a link without downloading it', looked.title.length > 0 && looked.durationSeconds > 0 && looked.url.includes('youtube.com/watch') && /^https:\/\//.test(looked.thumbnail ?? ''), looked);
+const poster = await branding.remoteThumbnail(looked.thumbnail);
+check('thumbnail: fetched and normalised to a JPEG', Buffer.isBuffer(poster) && poster[0] === 0xff && poster[1] === 0xd8 && poster.length > 3000, poster?.length);
+check('thumbnail: local and non-https addresses are never fetched', (await branding.remoteThumbnail('https://localhost/a.jpg')) === undefined && (await branding.remoteThumbnail('https://192.168.1.1/a.jpg')) === undefined && (await branding.remoteThumbnail('http://i.ytimg.com/a.jpg')) === undefined && (await branding.remoteThumbnail(undefined)) === undefined);
+
+const sizes: Record<string, number> = {};
+for (const audio of ['standard', 'mp3', 'small'] as const) {
+  try {
+    const media = await dl.downloadMedia(target.url, 'audio', limits, { audio });
+    sizes[audio] = media.sizeBytes;
+    check(`audio quality ${audio}: playable ${audio === 'standard' ? 'M4A' : 'MP3'}`, media.playable && media.extension === (audio === 'standard' ? 'm4a' : 'mp3') && media.sizeBytes > 10_000, media);
+    console.log(`      ${audio}: ${fmt.fileSize(media.sizeBytes)} .${media.extension}`);
+    await media.cleanup();
+  } catch (error) {
+    check(`audio quality ${audio}`, false, (error as Error).message);
+  }
+}
+check('audio quality: "small" is well under the MP3 at 192 kbps', sizes.small < sizes.mp3 * 0.6, sizes);
+for (const maxHeight of [360, 720]) {
+  try {
+    const media = await dl.downloadMedia(target.url, 'video', limits, { maxHeight });
+    sizes[`v${maxHeight}`] = media.sizeBytes;
+    check(`video up to ${maxHeight}p: an MP4`, media.playable && media.mimetype === 'video/mp4', media);
+    console.log(`      ${maxHeight}p: ${fmt.fileSize(media.sizeBytes)}`);
+    await media.cleanup();
+  } catch (error) {
+    check(`video up to ${maxHeight}p`, false, (error as Error).message);
+  }
+}
+check('video quality: 360p is smaller than 720p', sizes.v360 < sizes.v720, sizes);
 
 // --- limits and errors ---------------------------------------------------------------------------
 try {

@@ -219,6 +219,55 @@ function BehaviourCard() {
   );
 }
 
+function BrandingCard() {
+  const { settings, saveSettings } = useLive();
+  if (!settings) return null;
+  const { branding, commands } = settings;
+  return (
+    <Card title="Branding and developer" description={`The bot's name, and what ${commands.prefix}developer shares.`}>
+      <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_220px]">
+        <div className="grid content-start gap-4 sm:grid-cols-2">
+          <Field label="Bot name" hint="Shown at the top of menus and info cards.">
+            <CommitInput maxLength={30} value={branding.botName} onCommit={value => void (value.trim() && saveSettings('branding', { botName: value.trim() }))} />
+          </Field>
+          <Field label="Developer name">
+            <CommitInput maxLength={60} value={branding.developerName} onCommit={value => void saveSettings('branding', { developerName: value.trim() })} />
+          </Field>
+          <Field label="Developer WhatsApp number" hint="Country code and number, digits only (e.g. 94771234567). Leave empty to share no number.">
+            <CommitInput
+              inputMode="numeric"
+              autoComplete="off"
+              placeholder="Not shared"
+              value={branding.developerNumber}
+              onCommit={value => void saveSettings('branding', { developerNumber: value.replace(/\D/g, '') })}
+            />
+          </Field>
+          <Field label="Developer website" hint="A portfolio or home page.">
+            <CommitInput maxLength={200} placeholder="Not shared" value={branding.developerWebsite} onCommit={value => void saveSettings('branding', { developerWebsite: value.trim() })} />
+          </Field>
+          <Field label="Developer profile link" hint="A GitHub profile or social page.">
+            <CommitInput maxLength={200} placeholder="Not shared" value={branding.developerLink} onCommit={value => void saveSettings('branding', { developerLink: value.trim() })} />
+          </Field>
+        </div>
+        <figure className="min-w-0">
+          <img src="/cover.jpg" alt="The bot's default cover image" className="aspect-square w-full rounded-lg border border-line object-cover" />
+          <figcaption className="mt-2 text-xs text-muted">
+            Sent with {commands.prefix}menu. To use your own, put a <code className="font-mono">cover.jpg</code> in the data folder.
+          </figcaption>
+        </figure>
+      </div>
+      <div className="mt-2 border-t border-line pt-2">
+        <Toggle
+          label="Send the cover image with the menu"
+          description={`Also used by ${commands.prefix}botinfo and ${commands.prefix}developer.`}
+          checked={branding.coverOnMenu}
+          onChange={coverOnMenu => saveSettings('branding', { coverOnMenu })}
+        />
+      </div>
+    </Card>
+  );
+}
+
 export function SettingsPage() {
   const toast = useToast();
   const { saveState, saveError } = useLive();
@@ -257,6 +306,7 @@ export function SettingsPage() {
       <PageHeader title="Settings" description="Behaviour, storage, dashboard access and system details." actions={<SaveIndicator state={saveState} error={saveError} />} />
       <div className="space-y-6">
         <BehaviourCard />
+        <BrandingCard />
         <DatabaseCard system={system} reload={load} />
         <PasswordCard />
         <Card

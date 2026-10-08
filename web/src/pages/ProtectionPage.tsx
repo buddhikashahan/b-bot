@@ -165,13 +165,24 @@ export function ProtectionPage() {
           />
         </Card>
 
-        <Card title="Calls" description="Voice and video calls cannot be answered by a bot.">
+        <Card title="Calls" description="WhatsApp does not let a linked device pick up a call, so the bot declines it and answers in the chat instead.">
           <Toggle label="Decline incoming calls" checked={calls.reject} onChange={reject => saveSettings('calls', { reject })} />
           {calls.reject && (
-            <div className="mt-2 border-t border-line pt-4">
+            <div className="mt-2 grid gap-4 border-t border-line pt-4">
               <Field label="Message to the caller" hint="Sent right after declining. Leave empty to decline silently.">
                 <CommitTextarea rows={2} value={calls.message} onCommit={message => saveSettings('calls', { message })} />
               </Field>
+              <Toggle
+                label="Answer the caller with a voice note"
+                description="Speaks the message below instead of sending the text. Uses the assistant's voice when a Gemini key is set, a basic voice otherwise. With the AI assistant on, the caller can then carry on by voice note."
+                checked={calls.voiceGreeting}
+                onChange={voiceGreeting => saveSettings('calls', { voiceGreeting })}
+              />
+              {calls.voiceGreeting && (
+                <Field label="What the voice note says" hint="Plain sentences work best. Up to 600 characters.">
+                  <CommitTextarea rows={3} maxLength={600} value={calls.voiceMessage} onCommit={voiceMessage => void (voiceMessage.trim() && saveSettings('calls', { voiceMessage }))} />
+                </Field>
+              )}
             </div>
           )}
         </Card>

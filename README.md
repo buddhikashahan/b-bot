@@ -1,5 +1,7 @@
 # B-Bot
 
+<p align="center"><img src="server/assets/cover.jpg" alt="B-Bot, your smart WhatsApp assistant" width="420"></p>
+
 [![CI](https://github.com/buddhikashahan/b-bot/actions/workflows/ci.yml/badge.svg)](https://github.com/buddhikashahan/b-bot/actions/workflows/ci.yml)
 
 A self-hosted WhatsApp bot with a web dashboard, built on [Baileys](https://github.com/WhiskeySockets/Baileys).
@@ -8,16 +10,20 @@ A self-hosted WhatsApp bot with a web dashboard, built on [Baileys](https://gith
 - **Anti-delete and anti-edit**: recovers messages deleted for everyone, and shows edits before/after
 - **Anti view-once**: saves view-once photos, videos and voice notes as normal media (see the note below on how)
 - **Status automation**: auto-view and/or forward contacts' statuses
-- **Call rejection**: declines calls and tells the caller to text instead
+- **Call rejection**: declines calls and tells the caller to message instead, in text or with a spoken voice note
 - **AI assistant**: Google Gemini answers ordinary messages, with your own instructions, photo understanding and per-chat memory
-- **Reply-by-number menus**: the bot's own menu, search results, and menus you design in the dashboard
+- **Reply-by-number menus**: the bot's own menu, search results, download format choices, and menus you design in the dashboard; optionally as tappable buttons
 - **Auto-replies**: keyword rules and an away message
 - **Group protection**: anti-link (whitelist, delete / warn / kick), warnings, welcome and farewell messages
 - **Scheduler and broadcasts**: one-off, recurring (cron) and multi-recipient messages that survive restarts
 - **Access control**: public or private mode, groups-only / private-only commands, blocked people, ignored groups
-- **Media downloads**: songs and videos from YouTube, Facebook, TikTok, Instagram, X and Pinterest, plus YouTube search
+- **Media downloads**: songs and videos from YouTube, Facebook, TikTok, Instagram, X, Pinterest, Threads, Snapchat, Reddit, SoundCloud, Vimeo, Dailymotion, Twitch, Bilibili and Likee, with thumbnail previews and a choice of quality (audio, MP3, small file, voice note, 360p to 1080p, or as a document)
+- **Media tools**: stickers from photos and videos, voice notes, MP3 extraction, GIFs, trimming, sound effects, photo effects and meme captions
+- **Voice conversations**: the assistant listens to voice notes and answers with a voice note in the same language
+- **Text to speech and translation**: natural AI voices and AI translation with a Gemini key, basic free services without one
 - **Look-ups**: films and series, news, crypto prices, world clock, Wikipedia, dictionary, weather, translation, currency, link shortener, GitHub
-- **Commands and plugins**: 93 built-in chat commands with WhatsApp-formatted replies, plus drop-in plugin files
+- **Commands and plugins**: 128 built-in chat commands with WhatsApp-formatted replies, plus drop-in plugin files
+- **Your branding**: bot name, cover image on the menu, and a developer card with contact, website and profile link
 - **Dashboard**: works on phones, tablets and desktops; getting-started guide, quick switches, live activity feed, instant-save settings, built-in help, live logs
 - **Any database**: SQLite out of the box; PostgreSQL, MySQL or MongoDB by changing one URL
 
@@ -127,7 +133,13 @@ stub saying "open this on your phone". B-Bot therefore cannot open a view-once o
    your alert chat. A reply from anyone else in the chat works the same way.
 3. `.vv` (reply to the view-once with it) does the same on demand; `.vv here` posts the copy into the chat.
 
-**Calls.** Incoming calls can be declined automatically, with an optional message to the caller.
+**Calls.** Incoming calls can be declined automatically, with an optional message to the caller: a text,
+or (**Protection > Calls > Answer the caller with a voice note**) a short spoken message in the assistant's
+voice. A call itself cannot be picked up: WhatsApp gives a linked device the ring but not the call's audio,
+and no library for linked devices can join a call, so a live spoken conversation over the call (for
+example through Gemini's Live API) is not possible this way. The nearest thing is built in: with the AI
+assistant on, the caller answers the voice note with one of their own and the conversation carries on by
+voice note.
 
 **Auto-replies.** Keyword rules (contains / is exactly / starts with, per chat type) answer common
 messages; `{name}` inserts the sender's name. The away message answers each private chat once per
@@ -144,7 +156,7 @@ group, which is how `.ignore off` works.
 [Google AI Studio](https://aistudio.google.com/apikey)); the key is checked with Google before it is
 saved (by listing the models it can use, which takes a moment and costs nothing), stored in the
 database, and never sent back to the browser. With the assistant switched on, messages that are not
-commands are answered by the model (`gemini-3.8-flash` by default).
+commands are answered by the model (`gemini-3.5-flash` by default).
 
 - **Your instructions.** Write who the assistant is and what it knows, or start from a preset. A short
   fixed rule set is always added so answers suit WhatsApp (brief, WhatsApp formatting, the sender's language).
@@ -152,21 +164,31 @@ commands are answered by the model (`gemini-3.8-flash` by default).
   replied to unless you choose "every message".
 - **Answer speed.** Gemini 3 models reason before answering. B-Bot asks for the lowest level ("Fast")
   so replies arrive in seconds; "Balanced" and "Thorough" trade waiting time for more careful answers.
-  For the quickest and cheapest replies choose `gemini-3.5-flash-lite` as the model.
+  For the quickest and cheapest replies choose one of the `-lite` models.
 - **Backup model.** Google's newest models are often at capacity: they answer `503 high demand` or do
   not answer at all. The main model therefore gets a short head start (7 seconds on "Fast"); if it is
-  still silent, the backup model (`gemini-3.5-flash-lite` by default) is asked as well and whichever
+  still silent, the backup model (`gemini-3.1-flash-lite` by default) is asked as well and whichever
   answers first is used. A model that failed is tried last for the next five minutes, so later replies
   are immediate. The AI assistant page shows which model answered and says when the backup is standing in.
 - **Memory.** The latest messages of each chat (12 by default, 0 to 40) are sent along as context.
   Anything older than a day is not used and is erased after a week. `.resetai` forgets a chat.
 - **Photos.** Pictures are downsized and sent to the model so it can describe them or answer about them.
 - **Order of precedence.** Commands, then a menu reply, then dashboard menus, then keyword auto-replies,
-  then the AI, and only if none of those answered, the away message. Blocked people and ignored groups are never answered. At most 8 automatic answers per chat
+  then the AI, and only if none of those answered, the away message. Anything typed like a command
+  (a typo, a switched-off command, someone who may not use commands) is never treated as conversation:
+  no AI answer and no away message, just a "did you mean" hint when the name is close to a real command. Blocked people and ignored groups are never answered. At most 8 automatic answers per chat
   per minute, so two bots cannot loop.
 - **Commands.** `.ai <question>` asks directly (also about a replied-to message or photo) and works even
   when automatic answers are off; `.summarize`, `.ocr` and `.describe` are one-off tasks.
-- What people write, and the photos they send, go to Google for processing. Usage beyond Google's free
+- **Speech and translation.** `.tts <text>` (or a reply to a message) answers with a voice note in one of
+  Gemini's voices (`.tts puck Hello`), in whatever language the text is written. `.translate sinhala Good morning`
+  translates with the model. Without a key, or while Google is busy, both fall back to free services
+  (Google Translate's voice, MyMemory) with shorter length limits.
+- **Voice notes.** When someone sends a voice note the assistant listens to it and replies with a voice
+  note in the language they spoke (typically 10 to 20 seconds later), remembering what was said like any
+  other message. The voice is chosen on the **Assistant** page, where listening and spoken replies can
+  each be switched off; music files and recordings over five minutes are left alone.
+- What people write, and the photos and voice notes they send, go to Google for processing. Usage beyond Google's free
   tier is billed by Google to the key's account.
 
 **Reply-by-number menus.** Whenever the bot sends a numbered list, it stores what each number means in
@@ -176,19 +198,37 @@ and stay answerable for a day.
 
 - `.menu` lists categories; a number opens one; a number there runs the command, or explains it when it
   needs input. `.menu all` prints everything on one page.
-- `.yts`, `.imdb` and `.news` results are numbered the same way.
+- `.yts`, `.imdb` and `.news` results, and the format choices of `.song` and `.video`, are numbered the same way.
+- **Tappable buttons (experimental).** The **Menus** page has a switch that sends menus as WhatsApp
+  interactive messages instead of plain text, never with more than three buttons. Menus of yours with up
+  to three options become buttons. The format choice of `.song` and `.video` (on top of the video's
+  thumbnail) shows its two usual picks as buttons and keeps the rest behind "More options". The
+  `.developer` card gets contact, portfolio and GitHub buttons. Long menus (`.menu`, search results) become
+  a pick-list, and `.menu` adds an "All commands" button beside it. Cover images and thumbnails are shown
+  as the header of the message.
+  WhatsApp supports these officially only for Business API accounts, so from an ordinary linked account
+  they are best-effort: they render on current phones but not everywhere (WhatsApp Web in particular), and
+  WhatsApp can stop showing them at any time, which is why this is off by default. Replying with a number
+  keeps working, and if such a message cannot be sent the plain numbered one goes out in its place.
 - On the **Menus** page you can build your own: a trigger ("hi"), a title, a greeting, and options that
   send a reply, open another menu, or run a command. A live preview shows how it will look.
 
-**Downloads.** `.song` and `.video` take a name or a YouTube link; `.fb`, `.tiktok`, `.insta`, `.x` and
-`.pin` take a link from that service; `.yts` searches YouTube. The work is done by
+**Downloads.** `.song` and `.video` take a name or a YouTube link and answer with the video's details on
+its thumbnail and a numbered choice of formats, the usual ones first: audio that plays in the chat, audio
+as a document, MP3 (192 kbps), a small 64 kbps file, a voice note, video at 360p / 480p / 720p / 1080p, or
+video as a document. `.play` skips
+the question and sends the audio straight away; `.yta mp3 <link>` and `.ytv 480 <link>` name the format
+directly; `.thumb` fetches a thumbnail; `.yts` searches YouTube. `.fb`, `.tiktok`, `.insta`, `.x`, `.pin`,
+`.threads`, `.snap`, `.reddit`, `.soundcloud`, `.vimeo`, `.dailymotion`, `.twitch`, `.bilibili` and `.likee`
+take a link from that service; add `audio` for the sound only or `doc` to get a file. The work is done by
 [yt-dlp](https://github.com/yt-dlp/yt-dlp), which B-Bot downloads into `data/bin` the first time it is
 needed (the official release, verified against its published checksum) and by ffmpeg, which comes with
 `npm install` through the optional `ffmpeg-static` package. Files are fetched to a temporary folder, sent,
 and deleted.
 
 - Limits (largest file, longest video, owners only, on/off) are on the **Commands** page. When a video
-  is too big at 720p the bot picks a lower quality that fits.
+  is too big at the chosen quality the bot picks a lower one that fits. When a site refuses a stream
+  ("403 Forbidden") the bot retries and then falls back to a plainer version of the same video.
 - Sites change often. If downloads start failing, press **Update downloader** on the Commands page or send
   `.updatedl`.
 - Some posts (private accounts, many Instagram reels, age-restricted videos) only download when logged in.
@@ -197,9 +237,23 @@ and deleted.
   network addresses. `.dl <link>` (any site yt-dlp supports) is owner-only for that reason.
 - Only download what you have the right to save. Downloading may be against a site's terms of service.
 
+**Media tools.** Reply to a photo, video, audio or sticker (or send it with the command as its caption).
+`.sticker` makes a sticker from a photo, or an animated one from a GIF or short video; `.circle` a round
+one; `.toimg` turns a sticker back into a picture. `.tomp3` pulls the sound out of a video, `.tovn` makes
+a voice note, `.togif` a looping GIF and `.trim 0:30 1:15` cuts a piece out. Sound effects: `.bass`,
+`.nightcore`, `.slow`, `.fast`, `.deep`, `.chipmunk`, `.reverse`. Photo effects: `.blur`, `.grey`, `.invert`,
+`.vflip`, `.mirror`, `.rotate`, `.enhance` and `.meme top text | bottom text`. Everything runs on your
+server with ffmpeg and sharp; files up to 40 MB are accepted.
+
+**Branding.** `.menu`, `.botinfo` and `.developer` are sent with the cover image. Put your own
+`cover.jpg` (or `.png` / `.webp`) in the data folder to replace the bundled one, or switch covers off on
+the **Menus** page. The bot's name and the developer card (name, website, profile link, and a WhatsApp number
+that is also shared as a contact card) are edited under **Settings > Branding and developer**; clear a
+field to leave it off the card.
+
 **Look-ups.** `.imdb`, `.news`, `.crypto`, `.time`, `.wiki`, `.define`, `.weather`, `.translate`, `.convert`,
 `.shorten` and `.github` call free public services (Cinemeta, Google News, CoinGecko, Open-Meteo,
-Wikipedia, dictionaryapi.dev, MyMemory, open.er-api.com, is.gd / TinyURL, GitHub). The text people
+Wikipedia, dictionaryapi.dev with Wiktionary as its stand-in, MyMemory, open.er-api.com, is.gd / TinyURL, GitHub). The text people
 type after those commands is sent to the respective service.
 
 **Activity.** Everything the bot does (recoveries, reveals, removed links, declined calls, commands,
@@ -221,12 +275,12 @@ The default prefix is `.` (change it on the **Commands** page). Send `.menu` for
 
 | Category | Commands |
 | --- | --- |
-| General | `menu`, `ping`, `uptime`, `botinfo`, `owner`, `report`, `jid` |
+| General | `menu`, `ping`, `uptime`, `botinfo`, `owner`, `developer`, `report`, `jid` |
 | AI assistant | `ai`, `summarize`, `ocr`, `describe`, `resetai` |
-| Downloads | `yts`, `song`, `video`, `fb`, `tiktok`, `insta`, `x`, `pin`, `ytpick` |
-| Search & info | `imdb`, `news`, `crypto`, `time`, `wiki`, `define`, `weather`, `translate`, `convert`, `shorten`, `github` |
-| Media | `sticker`, `toimg` |
-| Tools | `remind <time> <text>`, `calc`, `qr`, `poll`, `pp`, `genpass` |
+| Downloads | `yts`, `song`, `video`, `play`, `yta`, `ytv`, `thumb`, `ytpick`, `fb`, `tiktok`, `insta`, `x`, `pin`, `threads`, `snap`, `reddit`, `soundcloud`, `vimeo`, `dailymotion`, `twitch`, `bilibili`, `likee` |
+| Search & info | `imdb`, `news`, `crypto`, `time`, `wiki`, `define`, `weather`, `convert`, `shorten`, `github` |
+| Media | `sticker`, `circle`, `toimg`, `tomp3`, `tovn`, `togif`, `trim`, `bass`, `nightcore`, `slow`, `fast`, `deep`, `chipmunk`, `reverse`, `blur`, `grey`, `invert`, `vflip`, `mirror`, `rotate`, `enhance`, `meme` |
+| Tools | `tts`, `translate`, `remind <time> <text>`, `calc`, `qr`, `poll`, `pp`, `genpass` |
 | Group admin | `kick`, `add`, `promote`, `demote`, `warn`, `warnings`, `resetwarn`, `del`, `tagall`, `hidetag`, `admins`, `link`, `revoke`, `setname`, `setdesc`, `mute`, `unmute`, `lock`, `unlock`, `antilink`, `welcome`, `goodbye`, `groupinfo` |
 | Fun | `8ball`, `flip`, `roll`, `choose`, `rate`, `joke`, `fact`, `truth`, `dare`, `fancy` |
 | Owner | `mode`, `scope`, `block`, `unblock`, `blocklist`, `ignore`, `antidelete`, `viewonce`, `autostatus`, `anticall`, `autoread`, `autoreply`, `assistant`, `away`, `setprefix`, `vv`, `save`, `dl`, `updatedl`, `leave` |
@@ -267,10 +321,11 @@ server/
   scripts/start.mjs         launcher: prepares the database, runs and restarts the server
   scripts/prepare-db.mjs    provider detection, schema rendering, prisma generate + db push
   prisma/schema.template.prisma
+  assets/cover.jpg          default cover image
   src/
     whatsapp/               session lifecycle, auth stores, event pipeline
     features/               anti-delete, view-once, status, calls, AI assistant, menus, auto-replies, access,
-                            activity, group guard, downloader
+                            activity, group guard, downloader, media tools, speech, branding
     commands/               registry, plugin loader, built-in commands
     scheduler/              persistent job engine
     api/                    Fastify REST routes + WebSocket
@@ -283,7 +338,7 @@ with a single `default` session created today, so running several accounts is an
 ## Testing
 
 ```bash
-npm test              # offline suites: pipeline, features, AI assistant, menus
+npm test              # offline suites: pipeline, features, AI assistant, menus, media conversion
 npm test -- --live    # also the suites that call public services and download media
 npm test -- core      # only suites whose file name contains "core"
 ```

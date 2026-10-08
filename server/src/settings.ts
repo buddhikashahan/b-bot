@@ -8,9 +8,13 @@ const log = scoped('settings');
 export const DEFAULT_WELCOME = 'Welcome {user} to *{group}*! 👋\n\n{desc}';
 export const DEFAULT_FAREWELL = 'Goodbye {user}. 👋';
 export const DEFAULT_CALL_MESSAGE = "📵 Sorry, I can't take calls on this number. Please send a message instead.";
-export const DEFAULT_AI_MODEL = 'gemini-3.8-flash';
-export const DEFAULT_AI_BACKUP_MODEL = 'gemini-3.5-flash-lite';
+export const DEFAULT_CALL_VOICE_MESSAGE = "Hello! Calls can't be answered on this number. Please send a voice message or a text instead, and you will get a reply right away.";
+export const DEFAULT_AI_MODEL = 'gemini-3.5-flash';
+/** Google offers no plain "3.1 Flash" for chat; the lite variant is the 3.1 Flash model that exists. */
+export const DEFAULT_AI_BACKUP_MODEL = 'gemini-3.1-flash-lite';
 export const DEFAULT_AWAY_MESSAGE = "👋 I'm away right now and will reply as soon as I can.";
+/** B-Bot's developer, shown by the developer command. */
+const DEVELOPER_NUMBER = '94766866297';
 
 const PhoneNumber = z.string().regex(/^\d{6,16}$/);
 const ChatScope = z.enum(['all', 'private', 'groups']);
@@ -36,6 +40,31 @@ export const SettingsSchema = z.object({
       markOnline: z.boolean().default(false),
       /** Send read receipts (blue ticks) for every incoming message. */
       autoRead: z.boolean().default(false)
+    })
+    .prefault({}),
+  branding: z
+    .object({
+      /** Name shown in menus and info cards. */
+      botName: z.string().trim().min(1).max(30).default('B-Bot'),
+      /** Send the cover image with the main menu and the info cards. */
+      coverOnMenu: z.boolean().default(true),
+      developerName: z.string().trim().max(60).default('Buddhika Shahan'),
+      /** WhatsApp number shared by the developer command (digits only, with country code). Empty shares no number. */
+      developerNumber: z.union([PhoneNumber, z.literal('')]).default(DEVELOPER_NUMBER),
+      /** Portfolio or home page. */
+      developerWebsite: z.string().trim().max(200).default('https://buddhika.dev'),
+      /** Source code or profile link. */
+      developerLink: z.string().trim().max(200).default('https://github.com/buddhikashahan')
+    })
+    .prefault({}),
+  menus: z
+    .object({
+      /**
+       * Send menus as tappable buttons / lists (with their picture as the header) instead of plain numbered text.
+       * WhatsApp only supports these officially for Business API accounts, so this is
+       * best-effort: they may not render on every phone. Numbers keep working either way.
+       */
+      buttons: z.boolean().default(false)
     })
     .prefault({}),
   commands: z.preprocess(
@@ -98,7 +127,11 @@ export const SettingsSchema = z.object({
       /** Decline incoming calls automatically. */
       reject: z.boolean().default(false),
       /** Text sent to the caller after declining; empty sends nothing. */
-      message: z.string().max(1000).default(DEFAULT_CALL_MESSAGE)
+      message: z.string().max(1000).default(DEFAULT_CALL_MESSAGE),
+      /** After declining, answer the caller with a voice note instead of the text. */
+      voiceGreeting: z.boolean().default(false),
+      /** What that voice note says. */
+      voiceMessage: z.string().trim().max(600).default(DEFAULT_CALL_VOICE_MESSAGE)
     })
     .prefault({}),
   autoReply: z
@@ -134,6 +167,12 @@ export const SettingsSchema = z.object({
       thinking: z.enum(['low', 'medium', 'high']).default('low'),
       /** Look at photos people send. */
       images: z.boolean().default(true),
+      /** Listen to voice notes people send. */
+      voiceNotes: z.boolean().default(true),
+      /** Answer a voice note with a voice note. Off answers it in text. */
+      voiceReplies: z.boolean().default(true),
+      /** Which of Gemini's voices speaks (see VOICES in features/ai.ts). */
+      voice: z.string().trim().regex(/^[A-Za-z]{2,30}$/).default('Kore'),
       /** How many of the latest messages of a chat are sent along as context. 0 = no memory. */
       historyMessages: z.number().int().min(0).max(40).default(12)
     })
@@ -169,6 +208,10 @@ export type SettingsPatch = { [K in keyof Settings]?: Partial<Settings[K]> };
 // Rows whose key starts with this prefix are private server state, never sent to the dashboard.
 const INTERNAL_PREFIX = '_';
 
+/** Bumped whenever stored settings need a one-time adjustment (see `migrate`). */
+const SETTINGS_VERSION = 3;
+const VERSION_KEY = 'settingsVersion';
+
 let current: Settings = SettingsSchema.parse({});
 
 export function getSettings(): Settings {
@@ -199,7 +242,35 @@ export async function loadSettings(): Promise<Settings> {
     }
     current = SettingsSchema.parse(repaired);
   }
+  await migrate();
   return current;
+}
+
+/**
+ * One-time adjustments to settings saved by earlier versions.
+ * Only values that are still an old default are touched; anything the owner picked stays.
+ */
+async function migrate(): Promise<void> {
+  const version = Number((await getInternal(VERSION_KEY)) ?? 0);
+  if (version >= SETTINGS_VERSION) return;
+  if (version < 2) {
+    // 1.1: main model gemini-3.5-flash with gemini-3.1-flash-lite as backup. The earlier
+    // defaults (3.8 flash, with 3.5 flash-lite behind it) were frequently overloaded.
+    const oldMain = ['gemini-3.8-flash', 'gemini-3.5-flash-lite'];
+    const oldBackup = ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', ''];
+    const patch: Partial<Settings['ai']> = {};
+    if (oldMain.includes(current.ai.model)) patch.model = DEFAULT_AI_MODEL;
+    if (oldBackup.includes(current.ai.fallbackModel)) patch.fallbackModel = DEFAULT_AI_BACKUP_MODEL;
+    if (Object.keys(patch).length) {
+      await updateSettings({ ai: patch });
+      log.info(`AI models updated to ${current.ai.model} with ${current.ai.fallbackModel} as backup`);
+    }
+  }
+  if (version < 3 && current.branding.developerNumber === '' && current.branding.developerName === 'Buddhika Shahan') {
+    // 1.2: the developer card carries a contact number. Before, the field started out empty.
+    await updateSettings({ branding: { developerNumber: DEVELOPER_NUMBER } });
+  }
+  await setInternal(VERSION_KEY, String(SETTINGS_VERSION));
 }
 
 export async function updateSettings(patch: SettingsPatch): Promise<Settings> {

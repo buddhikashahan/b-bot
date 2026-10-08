@@ -20,36 +20,46 @@
 }
 
 :root {
-  --bg: #f4f6f4;
+  --bg: #f3f7f4;
   --panel: #ffffff;
-  --raised: #f0f3f1;
-  --line: #dfe5e1;
-  --ink: #14201b;
-  --muted: #5d6b65;
-  --accent: #0f8a6d;
-  --accent-soft: #dff3ec;
+  --raised: #eef3ef;
+  --line: #dbe4de;
+  --ink: #0f1c16;
+  --muted: #5a6a62;
+  --accent: #0b8f52;
+  --accent-soft: #dcf5e7;
   --on-accent: #ffffff;
   --danger: #c2362b;
   --danger-soft: #fbe6e3;
   --warn: #9a6400;
   --warn-soft: #fcf0d4;
+  /* Halo around primary actions; only the dark theme lights it up. */
+  --glow: 0 1px 2px rgb(11 143 82 / 0.25);
+  --backdrop: radial-gradient(900px 480px at 100% -10%, rgb(11 143 82 / 0.07), transparent 65%);
 }
 
+/* Dark is the bot's home turf: near-black with the neon green of its cover art. */
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #0e1412;
-    --panel: #161e1b;
-    --raised: #1d2723;
-    --line: #2a3632;
-    --ink: #e7efeb;
-    --muted: #93a39c;
-    --accent: #2fc79b;
-    --accent-soft: #123b30;
-    --on-accent: #06231a;
+    --bg: #060a08;
+    --panel: #0c1310;
+    --raised: #121c17;
+    --line: #1c2b23;
+    --ink: #e6f5ec;
+    --muted: #88a094;
+    --accent: #2be37a;
+    --accent-soft: #0b3320;
+    --on-accent: #03170c;
     --danger: #f1776c;
     --danger-soft: #43201d;
     --warn: #e5b454;
     --warn-soft: #3d3013;
+    --glow: 0 0 0 1px rgb(43 227 122 / 0.35), 0 0 22px -6px rgb(43 227 122 / 0.7);
+    --backdrop:
+      radial-gradient(900px 480px at 100% -10%, rgb(43 227 122 / 0.1), transparent 65%),
+      radial-gradient(700px 420px at -10% 110%, rgb(43 227 122 / 0.06), transparent 60%),
+      linear-gradient(rgb(43 227 122 / 0.025) 1px, transparent 1px) 0 0 / 100% 32px,
+      linear-gradient(90deg, rgb(43 227 122 / 0.025) 1px, transparent 1px) 0 0 / 32px 100%;
   }
 }
 
@@ -60,10 +70,16 @@ body,
 }
 
 body {
-  background: var(--bg);
+  background: var(--backdrop), var(--bg);
+  background-attachment: fixed;
   color: var(--ink);
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
+}
+
+/* Primary actions and the logo carry the accent halo. */
+.glow {
+  box-shadow: var(--glow);
 }
 
 :focus-visible {

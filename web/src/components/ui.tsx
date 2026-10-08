@@ -108,7 +108,7 @@ type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
 
 export function Button({ variant = 'secondary', size = 'md', busy, icon, children, className, disabled, ...rest }: ButtonProps) {
   const variants = {
-    primary: 'bg-accent text-on-accent hover:opacity-90',
+    primary: 'glow bg-accent text-on-accent hover:opacity-90',
     secondary: 'border border-line bg-panel hover:bg-raised',
     ghost: 'text-muted hover:bg-raised hover:text-ink',
     danger: 'border border-danger/40 text-danger hover:bg-danger-soft'

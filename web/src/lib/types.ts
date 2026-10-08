@@ -57,7 +57,7 @@ export interface Settings {
   };
   viewOnce: { enabled: boolean; destination: 'alert' | 'chat'; onReply: boolean; notify: boolean };
   status: { autoView: boolean; forward: boolean };
-  calls: { reject: boolean; message: string };
+  calls: { reject: boolean; message: string; voiceGreeting: boolean; voiceMessage: string };
   autoReply: {
     enabled: boolean;
     rules: AutoReplyRule[];
@@ -74,11 +74,16 @@ export interface Settings {
     groupTrigger: 'mention' | 'always';
     thinking: 'low' | 'medium' | 'high';
     images: boolean;
+    voiceNotes: boolean;
+    voiceReplies: boolean;
+    voice: string;
     historyMessages: number;
   };
   downloads: { enabled: boolean; ownerOnly: boolean; maxSizeMb: number; maxMinutes: number };
   groups: { defaultWelcome: string; defaultFarewell: string };
   broadcast: { minDelayMs: number; maxDelayMs: number };
+  branding: { botName: string; coverOnMenu: boolean; developerName: string; developerNumber: string; developerWebsite: string; developerLink: string };
+  menus: { buttons: boolean };
 }
 
 export type ActivityType =
