@@ -38,21 +38,59 @@ export function createAuthStore(sessionId: string): Promise<AuthStore> {
 // --- AUTH_STORE=database: everything lives in the AuthKey table -------------------------------
 
 const CREDS = 'creds';
+/** Rows per statement: comfortably inside the parameter limits of all four databases. */
+const WRITE_CHUNK = 200;
+/** Attempts for a write that lost a race inside the database (Prisma error P2034). */
+const WRITE_ATTEMPTS = 4;
+
+function chunked<T>(items: T[], size = WRITE_CHUNK): T[][] {
+  return Array.from({ length: Math.ceil(items.length / size) }, (_, index) => items.slice(index * size, (index + 1) * size));
+}
 
 function keyHash(category: string, id: string): string {
   return createHash('sha256').update(`${category}:${id}`).digest('hex');
 }
 
 async function databaseAuthStore(sessionId: string): Promise<AuthStore> {
-  const write = (category: string, keyId: string, data: unknown) => {
-    const hash = keyHash(category, keyId);
-    const value = JSON.stringify(data, BufferJSON.replacer);
-    return prisma.authKey.upsert({
-      where: { sessionId_hash: { sessionId, hash } },
-      create: { sessionId, hash, category, keyId, value },
-      update: { value }
-    });
+  /**
+   * Replace and remove keys in one transaction of a few statements, however many keys there are.
+   *
+   * WhatsApp expects the 800-odd pre-keys of a freshly linked device within 30 seconds. Written
+   * one row per round trip, that takes minutes against a hosted database, the upload is
+   * abandoned and the session never becomes usable. Deleting the old rows and inserting the
+   * new ones in bulk costs the same handful of round trips for one key or a thousand.
+   */
+  const apply = async (rows: { hash: string; category: string; keyId: string; value: string }[], removed: string[]) => {
+    const hashes = [...removed, ...rows.map(row => row.hash)];
+    if (hashes.length === 0) return;
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await prisma.$transaction([
+          ...chunked(hashes).map(part => prisma.authKey.deleteMany({ where: { sessionId, hash: { in: part } } })),
+          ...chunked(rows).map(part => prisma.authKey.createMany({ data: part.map(row => ({ sessionId, ...row })) }))
+        ]);
+        return;
+      } catch (err) {
+        if ((err as { code?: string }).code !== 'P2034' || attempt >= WRITE_ATTEMPTS) throw err;
+        await new Promise(resolve => setTimeout(resolve, 50 * attempt));
+      }
+    }
   };
+
+  // One write at a time, in the order they were asked for: the newest value of a key must be
+  // the one that stays, and two transactions never fight over the same rows.
+  let queue: Promise<unknown> = Promise.resolve();
+  const enqueue = (rows: Parameters<typeof apply>[0], removed: string[]): Promise<void> => {
+    const done = queue.then(() => apply(rows, removed));
+    queue = done.catch(() => {});
+    return done;
+  };
+  const row = (category: string, keyId: string, data: unknown) => ({
+    hash: keyHash(category, keyId),
+    category,
+    keyId,
+    value: JSON.stringify(data, BufferJSON.replacer)
+  });
 
   const credsRow = await prisma.authKey.findUnique({
     where: { sessionId_hash: { sessionId, hash: keyHash(CREDS, CREDS) } }
@@ -78,26 +116,26 @@ async function databaseAuthStore(sessionId: string): Promise<AuthStore> {
           return result;
         },
         async set(data: SignalDataSet) {
-          const ops = [];
+          const rows: Parameters<typeof apply>[0] = [];
+          const removed: string[] = [];
           for (const category of Object.keys(data) as (keyof SignalDataSet)[]) {
-            const entries = data[category] ?? {};
-            for (const [id, value] of Object.entries(entries)) {
-              ops.push(
-                value
-                  ? write(category, id, value)
-                  : prisma.authKey.deleteMany({ where: { sessionId, hash: keyHash(category, id) } })
-              );
+            for (const [id, value] of Object.entries(data[category] ?? {})) {
+              if (value) rows.push(row(category, id, value));
+              else removed.push(keyHash(category, id));
             }
           }
-          if (ops.length) await prisma.$transaction(ops);
+          await enqueue(rows, removed);
         }
       }
     },
     async saveCreds() {
-      await write(CREDS, CREDS, creds);
+      await enqueue([row(CREDS, CREDS, creds)], []);
     },
-    async flush() {},
+    async flush() {
+      await queue;
+    },
     async clear() {
+      await queue;
       await prisma.authKey.deleteMany({ where: { sessionId } });
     }
   };

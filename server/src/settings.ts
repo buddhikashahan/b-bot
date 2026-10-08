@@ -260,7 +260,7 @@ async function migrate(): Promise<void> {
     const oldBackup = ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', ''];
     const patch: Partial<Settings['ai']> = {};
     if (oldMain.includes(current.ai.model)) patch.model = DEFAULT_AI_MODEL;
-    if (oldBackup.includes(current.ai.fallbackModel)) patch.fallbackModel = DEFAULT_AI_BACKUP_MODEL;
+    if (oldBackup.includes(current.ai.fallbackModel) && current.ai.fallbackModel !== DEFAULT_AI_BACKUP_MODEL) patch.fallbackModel = DEFAULT_AI_BACKUP_MODEL;
     if (Object.keys(patch).length) {
       await updateSettings({ ai: patch });
       log.info(`AI models updated to ${current.ai.model} with ${current.ai.fallbackModel} as backup`);
