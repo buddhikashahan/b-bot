@@ -197,7 +197,7 @@ function BehaviourCard() {
     <Card title="Behaviour" description="How the linked account appears to others and how fast the bot sends.">
       <Toggle
         label="Appear online while the bot is connected"
-        description="When off, your phone keeps getting notifications as usual. Takes effect on the next reconnect."
+        description="When off, the account shows as away even while the bot is running, and your phone keeps getting notifications as usual. People still see &quot;typing…&quot; for the moment the bot writes an answer."
         checked={general.markOnline}
         onChange={markOnline => saveSettings('general', { markOnline })}
       />

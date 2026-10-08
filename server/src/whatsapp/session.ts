@@ -64,6 +64,8 @@ const MAX_BACKOFF_MS = 5 * 60_000;
 const STABLE_AFTER_MS = 60_000;
 const GROUP_CACHE_TTL_MS = 5 * 60_000;
 const SENT_CACHE_SIZE = 500;
+/** How long after the bot last sent something it tells WhatsApp it is away again. */
+const AWAY_AFTER_MS = 2000;
 
 export class BotSession {
   readonly log: Logger;
@@ -88,9 +90,16 @@ export class BotSession {
   private connectedAt?: number;
   private readonly groupCache = new Map<string, { meta: GroupMetadata; at: number }>();
   private readonly sent = new Map<string, proto.IMessage>();
+  /** The availability WhatsApp was last told on this connection; undefined until it has been told. */
+  private shownOnline?: boolean;
+  private awayTimer?: NodeJS.Timeout;
 
   constructor(readonly id: string) {
     this.log = scoped(id === 'default' ? 'whatsapp' : `whatsapp:${id}`);
+    // The "appear online" switch takes effect at once, not at the next reconnect.
+    bus.subscribe(event => {
+      if (event.type === 'settings') void this.syncPresence();
+    });
   }
 
   // --- lifecycle ---------------------------------------------------------------------------
@@ -171,6 +180,7 @@ export class BotSession {
     this.generation++;
     clearTimeout(this.retryTimer);
     clearTimeout(this.stableTimer);
+    clearTimeout(this.awayTimer);
     this.retryAt = undefined;
     const sock = this.sock;
     this.sock = undefined;
@@ -221,10 +231,20 @@ export class BotSession {
       return;
     }
     this.sock = sock;
+    this.shownOnline = undefined;
+
+    // A typing or recording indicator shows the account as online; when it ends, go back to away.
+    const sendPresence = sock.sendPresenceUpdate;
+    sock.sendPresenceUpdate = async (type, jid) => {
+      await sendPresence(type, jid);
+      if (type === 'paused') this.stayAway();
+    };
 
     const isCurrent = () => generation === this.generation;
     sock.ev.on('creds.update', () => {
       void store.saveCreds().catch(err => this.log.error({ err }, 'failed to save credentials'));
+      // The account's name may only arrive now (see syncPresence).
+      if (isCurrent() && this.shownOnline === undefined) void this.syncPresence();
     });
     sock.ev.on('connection.update', update => {
       if (!isCurrent()) return;
@@ -294,6 +314,37 @@ export class BotSession {
       }
     });
     void this.refreshGroups().catch(err => this.log.warn({ err }, 'initial group sync failed'));
+    await this.syncPresence();
+  }
+
+  /**
+   * Tell WhatsApp whether this account is online, as the "appear online" setting says.
+   *
+   * The library does this once, when the connection opens, and skips it without a word when the
+   * account's name is not known yet, which is the case right after linking a device: the account
+   * then stays "online" for as long as the bot runs. So it is repeated here when the name
+   * arrives, when the setting changes, and (with `again`) after the bot has sent something.
+   */
+  private async syncPresence(again = false): Promise<void> {
+    const sock = this.sock;
+    // WhatsApp wants the account's name with this message, and the library sends nothing without it.
+    if (!sock || this.status !== 'connected' || !this.store?.state.creds.me?.name) return;
+    const online = getSettings().general.markOnline;
+    if (!again && this.shownOnline === online) return;
+    try {
+      await sock.sendPresenceUpdate(online ? 'available' : 'unavailable');
+      this.shownOnline = online;
+    } catch (err) {
+      this.log.debug({ err }, 'could not update the online status');
+    }
+  }
+
+  /** Sending anything makes WhatsApp show the account as online. Unless that is wanted, undo it shortly after. */
+  private stayAway(): void {
+    if (getSettings().general.markOnline) return;
+    clearTimeout(this.awayTimer);
+    this.awayTimer = setTimeout(() => void this.syncPresence(true), AWAY_AFTER_MS);
+    this.awayTimer.unref();
   }
 
   private async onClose(error: Error | undefined): Promise<void> {
@@ -402,6 +453,7 @@ export class BotSession {
   ): Promise<WAMessage | undefined> {
     const message = await this.requireSock().sendMessage(jid, content, options);
     if (message?.key.id && message.message) this.remember(message.key.id, message.message);
+    this.stayAway();
     return message;
   }
 
@@ -413,6 +465,7 @@ export class BotSession {
   async relay(jid: string, message: proto.IMessage, options: MessageRelayOptions): Promise<string> {
     const id = await this.requireSock().relayMessage(jid, message, options);
     this.remember(id, message);
+    this.stayAway();
     return id;
   }
 
