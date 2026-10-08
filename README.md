@@ -223,13 +223,16 @@ commands are answered by the model (`gemini-3.5-flash` by default).
   Gemini's voices (`.tts puck Hello`), in whatever language the text is written. `.translate sinhala Good morning`
   translates with the model. Without a key, or while Google is busy, both fall back to free services
   (Google Translate's voice, MyMemory) with shorter length limits.
-- **Using commands.** The assistant can act, not only talk: ask it to "download Lelena as MP3", "search
-  YouTube for lofi mixes" or "what's the weather in Kandy" and it runs the matching command (`.yta mp3
-  lelena`, `.yts lofi mixes`, `.weather Kandy`) through Gemini function calling; the command then answers in
-  the chat as usual. This works in automatic replies and with `.ai`. It can only use commands the person
-  asking could type themselves: owner commands for owners, admin commands for group admins, none at all
-  for strangers in private mode, and never a command you have switched off. Cooldowns apply, at most two
-  commands run per message, and the switch is **Assistant > Use the bot's commands**.
+- **Downloads on request.** Ask the assistant for a song or a video ("download Lelena as MP3", "send me
+  the Despacito video") and it sends the file straight away, without a menu of formats. Send it a link
+  from YouTube, TikTok, Facebook, Instagram or any other supported site and it downloads that; say "audio"
+  or "as a file" in your own words to get only the sound, or a document. This uses Gemini function calling
+  with two functions, `download_audio` and `download_video`, which run the download commands (`.yta`,
+  `.ytv`, `.tiktok`, `.fb`...) as the person asking: the same size limits and cooldowns apply, nobody gets
+  a download they could not have typed the command for, and at most two run per message. Everything else
+  (questions, translations, explanations) the model answers itself. It has no live data, so for today's
+  weather or news it points to `.weather` and `.news`. Works in automatic replies and with `.ai`; the
+  switch is **Assistant > Download songs and videos on request**.
 - **Voice notes.** When someone sends a voice note the assistant listens to it and replies with a voice
   note in the language they spoke (typically 10 to 20 seconds later), remembering what was said like any
   other message. The voice is chosen on the **Assistant** page, where listening and spoken replies can

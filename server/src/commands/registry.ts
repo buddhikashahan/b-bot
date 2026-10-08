@@ -6,10 +6,11 @@ import { config } from '../config.js';
 import { scoped } from '../logger.js';
 import { getSettings } from '../settings.js';
 import { recordActivity } from '../features/activity.js';
-import { provideCommandTools, type OfferedCommand } from '../features/ai.js';
+import { provideAssistantTools } from '../features/ai.js';
 import { contentOf, contextInfoOf, displayNumber, preferPn, senderIdsOf, textOf } from '../whatsapp/message-utils.js';
 import type { BotSession } from '../whatsapp/session.js';
 import { bold, command as commandText, fail, quote } from '../whatsapp/format.js';
+import { downloadTools } from './assistant-tools.js';
 import { adminCommands } from './builtin/admin.js';
 import { aiCommands } from './builtin/ai.js';
 import { discoverCommands } from './builtin/discover.js';
@@ -196,9 +197,9 @@ function quotedOf(msg: WAMessage, jid: string): QuotedMessage | undefined {
 
 /**
  * The commands the sender of `msg` could run by typing them, here and now: what the AI
- * assistant is allowed to use on their behalf. Nothing when commands are off for them.
+ * assistant may use on their behalf. Nothing when commands are off for them.
  */
-export async function commandsFor(bot: BotSession, msg: WAMessage): Promise<OfferedCommand[]> {
+export async function commandsFor(bot: BotSession, msg: WAMessage): Promise<string[]> {
   const settings = getSettings();
   const jid = msg.key.remoteJid;
   if (!settings.commands.enabled || !jid) return [];
@@ -218,7 +219,7 @@ export async function commandsFor(bot: BotSession, msg: WAMessage): Promise<Offe
       if (command.adminOnly && !isAdmin && !isOwner) return false;
       return !(command.botAdmin && !isBotAdmin);
     })
-    .map(command => ({ name: command.name, usage: command.usage, description: command.description }));
+    .map(command => command.name);
 }
 
 /**
@@ -328,5 +329,5 @@ export async function handleCommand(bot: BotSession, msg: WAMessage, chosen?: st
   return true;
 }
 
-// The AI assistant uses commands through these two functions (see features/ai.ts).
-provideCommandTools({ available: commandsFor, run: (bot, msg, text) => handleCommand(bot, msg, text, 'assistant') });
+// The AI assistant downloads for people through the commands (see assistant-tools.ts).
+provideAssistantTools(downloadTools(commandsFor, (bot, msg, line) => handleCommand(bot, msg, line, 'assistant')));

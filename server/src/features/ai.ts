@@ -38,20 +38,24 @@ const HISTORY_WINDOW_MS = 24 * 60 * 60 * 1000;
 const HISTORY_KEEP_MS = 7 * 24 * 60 * 60 * 1000;
 /** At most this many automatic answers per chat per minute, so two bots cannot talk forever. */
 const MAX_REPLIES_PER_MINUTE = 8;
-/** Commands the assistant may start for one message. */
-const MAX_COMMANDS_PER_REPLY = 2;
+/** Things the assistant may start for one message. */
+const MAX_ACTIONS_PER_REPLY = 2;
 /** Longer voice notes are left alone: they cost a lot to process and are rarely meant for a bot. */
 const MAX_VOICE_SECONDS = 300;
 
 export const DEFAULT_PROMPT =
   'You are a friendly, helpful assistant answering WhatsApp messages on behalf of the account owner. ' +
-  'Be warm and to the point. If you do not know something, say so instead of guessing.';
+  'Be warm, natural and to the point, the way a person texts.';
 
 /** Appended to every prompt, custom or not, because the output is shown in WhatsApp. */
-const HOUSE_RULES =
-  'You are replying inside WhatsApp. Keep answers short unless asked for detail. ' +
-  'Format only with WhatsApp markup: *bold*, _italic_, ~strikethrough~, `code`, and lines starting with "- " for lists. ' +
-  'Never use Markdown headings, tables or double asterisks. Reply in the language the person writes in.';
+const HOUSE_RULES = [
+  'How to reply:',
+  '- This is a WhatsApp chat. Answer in a few short sentences unless they ask for detail.',
+  '- Write in the language the person writes in.',
+  '- Format only with WhatsApp markup: *bold*, _italic_, ~strikethrough~, `code`, and lines starting with "- " for lists. Never use Markdown headings, tables or double asterisks.',
+  '- Answer questions, translate, explain, summarise and help with writing yourself.',
+  '- If you do not know something, say so instead of guessing.'
+].join('\n');
 
 /** Added when the person spoke instead of typing. The first line lets the chat memory keep what was said. */
 const VOICE_RULES =
@@ -62,14 +66,14 @@ const SPOKEN_RULES =
   'Your answer will be read aloud to them, so ignore the formatting rules above: write plain spoken sentences in the language they spoke, ' +
   'at most about 70 words, with no lists, emoji, symbols or markup.';
 
-/** Added when the assistant may use the bot's commands; the list of commands follows it. */
-const COMMAND_RULES =
-  "You can use this bot's commands for the person by calling the run_command function. " +
-  'Call it when they ask for something a command does: downloading a song or video, searching, weather, stickers, translations, reminders and so on. ' +
-  'The command sends its own result to the chat, so never repeat, describe or invent its output: reply with nothing, or with one short sentence. ' +
-  'Answer ordinary conversation and questions yourself, without a command. ' +
-  'run_command is the only way you can do things: never say that something was sent, downloaded or done unless you called it in this reply. ' +
-  'Notes in square brackets in your earlier replies were added by the system; never write such notes yourself.';
+/**
+ * Appended in the chat memory to a request the assistant carried out with a function. It sits in
+ * the person's turn, not the assistant's: a model repeats the shape of its own earlier replies,
+ * and a note there comes back as a typed-out "[ran the command...]" instead of a function call.
+ */
+const DONE_NOTE = '[system note: this was done and the result was sent to them]';
+/** The note an earlier version left in the assistant's turns, which the model learned to parrot. */
+const OLD_NOTE = /^\[ran the command:[^\n]*\]$/gim;
 
 export type AiErrorKind = 'no-key' | 'bad-key' | 'model' | 'busy' | 'slow' | 'blocked' | 'network' | 'other';
 
@@ -144,49 +148,23 @@ interface GenerateResponse {
   error?: { message?: string; status?: string };
 }
 
-/** A command of the bot, as described to the model. */
-export interface OfferedCommand {
+/** A function the model may call (a Gemini function declaration). */
+export interface AssistantTool {
   name: string;
-  /** "song <name or link>" */
-  usage?: string;
   description: string;
+  parameters: Record<string, unknown>;
 }
 
-/** A command the model asked to run. */
-export interface CommandCall {
-  command: string;
-  arguments: string;
+/** A function call the model made. */
+export interface ToolCall {
+  name: string;
+  args: Record<string, unknown>;
 }
 
 interface Answer {
   text: string;
-  calls: CommandCall[];
+  calls: ToolCall[];
 }
-
-const RUN_COMMAND = 'run_command';
-
-/** The one function the model gets: "run this command with these words after it". */
-function commandTool(offered: OfferedCommand[]) {
-  return {
-    functionDeclarations: [
-      {
-        name: RUN_COMMAND,
-        description: 'Run one of the bot\'s commands for the person, exactly as if they had typed it. The command sends its result to the chat by itself.',
-        parameters: {
-          type: 'object',
-          properties: {
-            command: { type: 'string', enum: offered.map(item => item.name), description: 'The command name, without a prefix.' },
-            arguments: { type: 'string', description: 'What follows the command name, as the person would type it. Leave empty when the command needs nothing.' }
-          },
-          required: ['command']
-        }
-      }
-    ]
-  };
-}
-
-/** "song <name or link>: Find a song..." */
-const catalogue = (offered: OfferedCommand[]) => offered.map(item => `${item.usage ?? item.name}: ${item.description}`).join('\n');
 
 async function call<T>(path: string, key: string, body: unknown, timeoutMs: number, cancel?: AbortSignal): Promise<T> {
   let response: Response;
@@ -234,7 +212,7 @@ async function generateWith(options: {
   model: string;
   system: string;
   turns: Turn[];
-  commands?: OfferedCommand[];
+  tools?: AssistantTool[];
   timeoutMs: number;
   cancel?: AbortSignal;
 }): Promise<Answer> {
@@ -246,7 +224,7 @@ async function generateWith(options: {
       {
         systemInstruction: { parts: [{ text: options.system }] },
         contents: options.turns,
-        ...(options.commands?.length ? { tools: [commandTool(options.commands)] } : {}),
+        ...(options.tools?.length ? { tools: [{ functionDeclarations: options.tools }] } : {}),
         generationConfig: {
           // Thinking is billed against this limit too, so leave room for it and the answer.
           maxOutputTokens: 4096,
@@ -279,15 +257,13 @@ async function generateWith(options: {
     .map(part => part.text)
     .join('')
     .trim();
-  const calls = parts
-    .filter(part => part.functionCall?.name === RUN_COMMAND && typeof part.functionCall.args?.command === 'string')
-    .map(part => ({ command: String(part.functionCall!.args!.command), arguments: String(part.functionCall!.args!.arguments ?? '') }));
+  const calls = parts.filter(part => part.functionCall?.name).map(part => ({ name: part.functionCall!.name!, args: part.functionCall!.args ?? {} }));
   if (text || calls.length) return { text, calls };
   if (data.promptFeedback?.blockReason || candidate?.finishReason === 'SAFETY' || candidate?.finishReason === 'PROHIBITED_CONTENT') {
     throw new AiError('blocked', "The AI declined to answer that because of Google's safety filters.");
   }
   if (candidate?.finishReason === 'MALFORMED_FUNCTION_CALL') {
-    throw new AiError('other', 'The AI tried to use a command but got it wrong. Try saying it another way.');
+    throw new AiError('other', 'The AI tried to do that but got it wrong. Try saying it another way.');
   }
   if (candidate?.finishReason === 'MAX_TOKENS') {
     throw new AiError('other', 'The AI used up its answer length while thinking. Choose a faster answer speed on the AI assistant page.');
@@ -312,7 +288,7 @@ type Outcome = ({ model: string } & Answer) | { model: string; error: unknown };
  * backup is asked as well and whichever answers first wins; the other request
  * is cancelled. A model that failed is tried last for the next few minutes.
  */
-export async function generate(options: { key: string; system: string; turns: Turn[]; commands?: OfferedCommand[] }): Promise<{ model: string } & Answer> {
+export async function generate(options: { key: string; system: string; turns: Turn[]; tools?: AssistantTool[] }): Promise<{ model: string } & Answer> {
   const settings = getSettings().ai;
   const chain = [...new Set([settings.model, settings.fallbackModel].filter(Boolean))];
   // Models that failed recently go to the back of the queue rather than out of it:
@@ -508,7 +484,7 @@ export async function synthesizeSpeech(text: string, voice: string = VOICES[0]):
 
 export function systemPrompt(context: string): string {
   const persona = getSettings().ai.prompt.trim() || DEFAULT_PROMPT;
-  return `${persona}\n\n${HOUSE_RULES}\n\n${context}`;
+  return `${persona}\n\n${context}\n\n${HOUSE_RULES}`;
 }
 
 /** Models still slip into Markdown; translate the common cases to what WhatsApp renders. */
@@ -539,10 +515,25 @@ async function recall(sessionId: string, chatJid: string, limit: number): Promis
     orderBy: { createdAt: 'desc' },
     take: limit
   });
-  const turns = rows.reverse().map(row => ({ role: row.role === 'model' ? ('model' as const) : ('user' as const), parts: [{ text: row.text }] }));
+  const turns: { role: 'user' | 'model'; text: string }[] = [];
+  for (const row of rows.reverse()) {
+    const role = row.role === 'model' ? ('model' as const) : ('user' as const);
+    let text = row.text;
+    const last = turns.at(-1);
+    if (role === 'model' && OLD_NOTE.test(text)) {
+      // Memory written by an earlier version: move its note to where notes live now.
+      text = text.replace(OLD_NOTE, '').trim();
+      if (last?.role === 'user' && !last.text.endsWith(DONE_NOTE)) last.text += `\n${DONE_NOTE}`;
+    }
+    OLD_NOTE.lastIndex = 0;
+    if (!text) continue;
+    // A request answered with a file leaves no assistant turn, so two of the person's can meet: join them.
+    if (last?.role === role) last.text += `\n${text}`;
+    else turns.push({ role, text });
+  }
   // The API expects a conversation to open with the user.
   while (turns[0]?.role === 'model') turns.shift();
-  return turns;
+  return turns.map(turn => ({ role: turn.role, parts: [{ text: turn.text }] }));
 }
 
 async function remember(sessionId: string, chatJid: string, entries: { role: 'user' | 'model'; text: string }[], keep: number): Promise<void> {
@@ -588,44 +579,37 @@ export interface Question {
   /** Replaces the owner's persona for task commands. */
   instruction?: string;
   /**
-   * The message being answered. With it (and the setting on) the assistant may run the
-   * bot's commands for its sender; without it there is nobody to run them for.
+   * The message being answered. With it (and the setting on) the assistant may act for its
+   * sender, e.g. download a song; without it there is nobody to act for.
    */
   msg?: WAMessage;
 }
 
 /**
- * How the assistant reaches the bot's commands. The command registry supplies this at start-up:
- * it knows the commands and already imports this module, so the dependency points one way.
+ * What the assistant can do besides talk. Supplied at start-up by the command registry, which
+ * knows the commands and already imports this module, so the dependency points one way.
  */
-export interface CommandTools {
-  /** The commands the sender of `msg` could type themselves, here and now. */
-  available(bot: BotSession, msg: WAMessage): Promise<OfferedCommand[]>;
-  /** Run `text` ("yta mp3 lelena") as if the sender of `msg` had typed it as a command. */
-  run(bot: BotSession, msg: WAMessage, text: string): Promise<unknown>;
+export interface AssistantTools {
+  /**
+   * The functions the sender of `msg` may use here and now, and how to use them (added to the
+   * system prompt). No tools when they may not use any.
+   */
+  available(bot: BotSession, msg: WAMessage): Promise<{ tools: AssistantTool[]; guidance: string }>;
+  /** Carry out one call for the sender of `msg`. The result goes to the chat. */
+  run(bot: BotSession, msg: WAMessage, call: ToolCall): Promise<void>;
 }
-let commandTools: CommandTools | undefined;
-export function provideCommandTools(tools: CommandTools): void {
-  commandTools = tools;
+let assistantTools: AssistantTools | undefined;
+export function provideAssistantTools(tools: AssistantTools): void {
+  assistantTools = tools;
 }
 
-/** "yta" + ".yta mp3 lelena" (models sometimes repeat the name) becomes "yta mp3 lelena". */
-function commandLine(call: CommandCall): string {
-  const words = call.arguments.replace(/\s+/g, ' ').trim().slice(0, 500);
-  const repeated = new RegExp(`^\\W{0,3}${call.command.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(\\s+|$)`, 'i');
-  return `${call.command} ${words.replace(repeated, '')}`.trim();
-}
-
-/**
- * Run the commands the assistant chose. Each one answers in the chat by itself, with the same
- * checks (owner, admin, cooldown) as when the person types it.
- */
-export async function runCommands(bot: BotSession, msg: WAMessage, commands: string[]): Promise<void> {
-  for (const text of commands) {
+/** Carry out what the assistant decided to do (see `converse`). Each action answers in the chat by itself. */
+export async function runActions(bot: BotSession, msg: WAMessage, actions: ToolCall[]): Promise<void> {
+  for (const action of actions) {
     try {
-      await commandTools?.run(bot, msg, text);
+      await assistantTools?.run(bot, msg, action);
     } catch (err) {
-      log.error({ err }, `the assistant could not run "${text.split(' ')[0]}"`);
+      log.error({ err }, `the assistant could not carry out ${action.name}`);
     }
   }
 }
@@ -652,10 +636,11 @@ export function toSpeech(text: string): string {
 }
 
 /**
- * `ask`, also returning what the model heard when the question was a voice note, and the
- * commands it wants run (see `runCommands`): the caller sends the answer first, then runs them.
+ * `ask`, also returning what the model heard when the question was a voice note, and what it
+ * decided to do rather than say (see `runActions`). When there are actions there is no answer
+ * text: the file that arrives is the reply.
  */
-export async function converse(bot: BotSession, question: Question): Promise<{ answer: string; heard?: string; commands: string[] }> {
+export async function converse(bot: BotSession, question: Question): Promise<{ answer: string; heard?: string; actions: ToolCall[] }> {
   const key = await getApiKey();
   if (!key) throw new AiError('no-key', 'The AI assistant is not set up yet. The owner can add a Gemini API key in the dashboard.');
   const settings = getSettings().ai;
@@ -668,13 +653,14 @@ export async function converse(bot: BotSession, question: Question): Promise<{ a
   ]
     .filter(Boolean)
     .join(' ');
-  // Commands are for conversation, not for the one-off tasks (summarise, translate...) that set their own instruction.
-  const offered = settings.commands && question.msg && commandTools && !question.instruction ? await commandTools.available(bot, question.msg) : [];
+  // Acting is for conversation, not for the one-off tasks (summarise, translate...) that set their own instruction.
+  const offered =
+    settings.downloads && question.msg && assistantTools && !question.instruction ? await assistantTools.available(bot, question.msg) : { tools: [], guidance: '' };
   const system = [
     question.instruction ? `${question.instruction}\n\n${HOUSE_RULES}` : systemPrompt(context),
+    offered.tools.length ? offered.guidance : '',
     question.voice ? VOICE_RULES : '',
-    question.spoken ? SPOKEN_RULES : '',
-    offered.length ? `${COMMAND_RULES}\n\nThe commands, with what follows each name:\n${catalogue(offered)}` : ''
+    question.spoken ? SPOKEN_RULES : ''
   ]
     .filter(Boolean)
     .join('\n\n');
@@ -687,15 +673,19 @@ export async function converse(bot: BotSession, question: Question): Promise<{ a
   parts.push({ text: spoken || 'What is in this picture?' });
 
   const history = question.stateless ? [] : await recall(bot.id, question.chatJid, settings.historyMessages);
+  // After a request that was answered with a file the memory ends on the person's turn: this message continues it.
+  const open = history.at(-1)?.role === 'user' ? history.pop() : undefined;
+  const turns: Turn[] = [...history, { role: 'user', parts: [...(open?.parts ?? []), ...parts] }];
   try {
-    const { text: raw, model, calls } = await generate({ key, system, turns: [...history, { role: 'user', parts }], commands: offered });
+    const { text: raw, model, calls } = await generate({ key, system, turns, tools: offered.tools });
+    // Only what was offered, and not a flood of it.
+    const actions = calls.filter(item => offered.tools.some(tool => tool.name === item.name)).slice(0, MAX_ACTIONS_PER_REPLY);
+    // A stray system note is never something to say; nor is anything else once the model has acted.
     const reply = question.voice ? splitHeard(raw) : { answer: raw, heard: undefined };
-    const answer = question.spoken ? toSpeech(reply.answer) : toWhatsApp(reply.answer);
-    // Only what was offered, however the model spells it, and not a flood of them.
-    const commands = calls
-      .filter(item => offered.some(command => command.name === item.command.toLowerCase()))
-      .slice(0, MAX_COMMANDS_PER_REPLY)
-      .map(item => commandLine({ ...item, command: item.command.toLowerCase() }));
+    const words = actions.length ? '' : reply.answer.replace(OLD_NOTE, '').replaceAll(DONE_NOTE, '').trim();
+    const answer = question.spoken ? toSpeech(words) : toWhatsApp(words);
+    // The model wrote nothing a person should read and did nothing either.
+    if (!answer && !actions.length) throw new AiError('other', 'The AI returned an empty answer. Try rephrasing.');
     lastAnswerModel = model;
     status.lastReplyAt = Date.now();
     status.lastError = null;
@@ -704,15 +694,16 @@ export async function converse(bot: BotSession, question: Question): Promise<{ a
       await remember(
         bot.id,
         question.chatJid,
-        [
-          { role: 'user', text: question.group && question.voice ? `${who}: ${said}` : said },
-          // The note keeps later turns aware of what was done; the rules tell the model not to imitate it.
-          { role: 'model', text: [answer, ...commands.map(text => `[ran the command: ${text}]`)].filter(Boolean).join('\n') }
-        ],
+        actions.length
+          ? [{ role: 'user', text: `${question.group && question.voice ? `${who}: ${said}` : said}\n${DONE_NOTE}` }]
+          : [
+              { role: 'user', text: question.group && question.voice ? `${who}: ${said}` : said },
+              { role: 'model', text: answer }
+            ],
         settings.historyMessages
       );
     }
-    return { answer, heard: reply.heard, commands };
+    return { answer, heard: reply.heard, actions };
   } catch (error) {
     const message = error instanceof AiError ? error.message : 'Unexpected error while asking the AI.';
     status.lastError = { message, at: Date.now() };
@@ -773,7 +764,7 @@ export async function handleAssistant(bot: BotSession, msg: WAMessage): Promise<
     const group = isGroup ? ((await bot.groupMeta(jid))?.subject ?? 'a group') : undefined;
     // Strip the @mention of the bot itself so it does not read as part of the question.
     const question = text.replace(/@\d{5,}/g, '').trim();
-    const { answer, heard, commands } = await converse(bot, {
+    const { answer, heard, actions } = await converse(bot, {
       chatJid: jid,
       text: question,
       image: hasImage ? media : undefined,
@@ -789,7 +780,7 @@ export async function handleAssistant(bot: BotSession, msg: WAMessage): Promise<
     if (speech) await bot.send(jid, { audio: speech.audio, mimetype: speech.mimetype, ptt: speech.voiceNote }, options);
     else if (answer) await bot.send(jid, { text: answer }, options);
     // Not awaited: a download can take a minute, and the chat should not wait for it to be answered again.
-    if (commands.length) void runCommands(bot, msg, commands);
+    if (actions.length) void runActions(bot, msg, actions);
     recentReplies.get(jid)?.push(Date.now());
     const what = voiceNote ? (speech ? 'AI answered a voice note from' : 'AI replied to a voice note from') : 'AI replied to';
     recordActivity(bot.id, 'ai', `${what} ${msg.pushName?.trim() || 'a contact'}${group ? ` in ${group}` : ''}`, {

@@ -69,8 +69,8 @@ const server = http.createServer((req, res) => {
     }
     const last = body.contents.at(-1);
     const text = last.parts.map((p: any) => p.text ?? '').join(' ');
-    // "TOOL:calc|2+2" makes the stand-in call run_command, the way a model does when asked to do something.
-    const wanted = [...text.matchAll(/TOOL:([\w-]+)\|([^\n]*?)(?= TOOL:| SAYING|$)/g)];
+    // 'CALL:download_audio|{"query":"x"}' makes the stand-in call that function, the way a model does when asked for a song.
+    const wanted = [...text.matchAll(/CALL:(\w+)\|(\{.*?\})(?= CALL:| SAYING|$)/g)];
     if (wanted.length && body.tools) {
       return send(200, {
         candidates: [
@@ -78,8 +78,8 @@ const server = http.createServer((req, res) => {
             content: {
               parts: [
                 { text: 'planning', thought: true },
-                ...(text.includes('SAYING') ? [{ text: 'One moment.' }] : []),
-                ...wanted.map(match => ({ functionCall: { name: 'run_command', args: { command: match[1], arguments: match[2] } } }))
+                ...(text.includes('SAYING') ? [{ text: 'Downloading it for you now!' }] : []),
+                ...wanted.map(match => ({ functionCall: { name: match[1], args: JSON.parse(match[2]) } }))
               ]
             },
             finishReason: 'STOP'
@@ -87,6 +87,8 @@ const server = http.createServer((req, res) => {
         ]
       });
     }
+    // A model that types out a note it saw in its own earlier replies instead of calling a function.
+    if (text.includes('PARROT')) return send(200, { candidates: [{ content: { parts: [{ text: '[ran the command: yts lelena]' }] }, finishReason: 'STOP' }] });
     if (text.includes('BLOCKME')) return send(200, { promptFeedback: { blockReason: 'SAFETY' } });
     if (last.parts.some((p: any) => p.inlineData?.mimeType.startsWith('audio/'))) {
       return send(200, { candidates: [{ content: { parts: [{ text: 'HEARD: what time do you open\n\nWe open at *nine* every day. 🙂' }] }, finishReason: 'STOP' }] });
@@ -499,47 +501,63 @@ const toEnglish = await say('.tr', { quotedMessage: { conversation: 'Bonjour tou
 check('translate: a bare reply means "into English"', toEnglish.text.includes('*To:* English') && toEnglish.text.includes('Bonjour tout le monde'), toEnglish.text);
 check('translate: stays out of the chat memory', (await prisma.aiMessage.count({ where: { chatJid: translated.from } })) === 0);
 
-// ================= the assistant using commands =================
+// ================= the assistant downloading for people =================
+const assistantTools = await src('commands/assistant-tools.ts');
+const line = (name: string, args: object) => assistantTools.commandFor({ name, args });
+check('downloads: a song by name becomes a direct download, never a menu', line('download_audio', { query: 'lelena' }).line === 'yta std lelena' && line('download_audio', { query: '  Lelena   Nilan  ', format: 'mp3' }).line === 'yta mp3 Lelena Nilan' && line('download_audio', { query: 'x', format: 'voice' }).line === 'yta voice x' && line('download_audio', { query: 'x', format: 'file' }).line === 'yta doc x');
+check('downloads: a video by name or YouTube link, at 480p unless a quality is named', line('download_video', { query: 'big buck bunny' }).line === 'ytv 480 big buck bunny' && line('download_video', { query: 'https://youtu.be/aqz-KE-bpKQ', quality: '720' }).line === 'ytv 720 https://youtu.be/aqz-KE-bpKQ' && line('download_video', { query: 'x', as_file: true }).line === 'ytv doc x' && line('download_video', { query: 'x', quality: '4k' }).line === 'ytv 480 x');
+check('downloads: links go to the command of their site', line('download_video', { query: 'https://vm.tiktok.com/ZMabc/' }).line === 'tiktok https://vm.tiktok.com/ZMabc/ video' && line('download_audio', { query: 'https://www.facebook.com/watch?v=1' }).line === 'fb https://www.facebook.com/watch?v=1 audio' && line('download_video', { query: 'here https://www.instagram.com/reel/abc/ please', as_file: true }).line === 'insta https://www.instagram.com/reel/abc/ video doc' && line('download_audio', { query: 'https://music.youtube.com/watch?v=abc' }).line === 'yta std https://music.youtube.com/watch?v=abc');
+check('downloads: unknown sites, local addresses and empty requests are refused in words', line('download_video', { query: 'https://example.org/v.mp4' }).problem.includes('cannot download from that site') && line('download_video', { query: 'http://192.168.1.1/x' }).problem && line('download_audio', { query: '  ' }).problem.includes('name of the song'));
+
 const toolsBefore = { ...getSettings().ai };
-await updateSettings({ ai: { enabled: true, scope: 'private', commands: true } });
+await updateSettings({ ai: { enabled: true, scope: 'private', downloads: true } });
+const functionsIn = (request: any): string[] => (request?.body.tools?.[0].functionDeclarations ?? []).map((item: any) => item.name);
 const noor = newPerson();
-const pinged = await say('are you there? TOOL:ping|', { from: noor, wait: 1200 });
-const toolRequest = pinged.calls[0]?.body;
-const offeredNames: string[] = toolRequest?.tools?.[0].functionDeclarations[0].parameters.properties.command.enum ?? [];
-const toolRules: string = toolRequest?.systemInstruction.parts[0].text ?? '';
-check('commands: the assistant runs the command it chose, and the command answers in the chat', pinged.text.includes('Pong') && pinged.sent.length === 1, pinged.text);
-check('commands: the model is offered what this person may type', ['ping', 'song', 'yta', 'weather', 'sticker', 'translate'].every(name => offeredNames.includes(name)) && toolRequest.tools[0].functionDeclarations[0].name === 'run_command', offeredNames.length);
-check('commands: owner, group and AI commands are not offered to a stranger in a private chat', !['mode', 'block', 'antidelete', 'kick', 'tagall', 'ai', 'summarize', 'dl'].some(name => offeredNames.includes(name)), offeredNames.filter(name => ['mode', 'block', 'antidelete', 'kick', 'tagall', 'ai', 'summarize', 'dl'].includes(name)));
-check('commands: the prompt lists them with their usage', toolRules.includes('run_command') && toolRules.includes('yta [std|mp3|small|voice|doc] <name or link>: ') && toolRules.includes('weather <city>'), toolRules.slice(-200));
-const worked = await say('work this out TOOL:calc|.calc (2+3)*4 SAYING', { from: noor, wait: 1200 });
-check('commands: a sentence from the model comes first, then the result; a repeated command name is tidied away', worked.texts[0] === 'One moment.' && worked.texts[1]?.includes('*20*') && worked.sent.length === 2, worked.texts);
-const toolMemory = await prisma.aiMessage.findMany({ where: { chatJid: noor, role: 'model' }, orderBy: { createdAt: 'asc' } });
-check('commands: the chat memory notes what was run', toolMemory[0]?.text === '[ran the command: ping]' && toolMemory[1]?.text === 'One moment.\n[ran the command: calc (2+3)*4]', toolMemory.map((row: any) => row.text));
-const three = await say('TOOL:ping| TOOL:uptime| TOOL:jid|', { wait: 1500 });
-check('commands: at most two per message', three.sent.length === 2 && three.texts[0].includes('Pong') && three.texts[1].includes('*Uptime:*'), three.texts);
-const again = await say('TOOL:ping|', { from: three.from, wait: 1000 });
-check('commands: cooldowns apply as if the person had typed the command', again.text.includes('Slow down'), again.text);
-const sneaky = await say('TOOL:mode|private', { wait: 1000 });
-check('commands: one that was not offered is not run, whatever the model asks for', getSettings().commands.mode === 'public' && sneaky.sent.length === 0, sneaky.texts);
+const refused = await say('get me this CALL:download_video|{"query":"https://example.org/clip.mp4"} SAYING', { from: noor, wait: 1200 });
+const toolRules: string = refused.calls[0]?.body.systemInstruction.parts[0].text ?? '';
+check('downloads: the model is offered the two download functions and nothing else', functionsIn(refused.calls[0]).join() === 'download_audio,download_video' && !JSON.stringify(refused.calls[0].body.tools).includes('run_command'), functionsIn(refused.calls[0]));
+check('downloads: the prompt says how to use them, and stays short', toolRules.includes('call download_audio at once') && toolRules.includes('nothing but such a link') && toolRules.includes('Never ask which format') && toolRules.includes('.weather') && !toolRules.includes('sticker') && toolRules.length < 2600, toolRules.length);
+check('downloads: the function is carried out and the model\'s own words are not sent', refused.sent.length === 1 && refused.text.includes('I cannot download from that site') && !refused.text.includes('Downloading it for you'), refused.texts);
+const doneMemory = await prisma.aiMessage.findMany({ where: { chatJid: noor }, orderBy: { createdAt: 'asc' } });
+check('downloads: the chat memory marks the request as done in the person\'s turn, with no assistant turn to imitate', doneMemory.length === 1 && doneMemory[0].role === 'user' && doneMemory[0].text.endsWith('[system note: this was done and the result was sent to them]') && !doneMemory[0].text.includes('ran the command'), doneMemory.map((row: any) => [row.role, row.text]));
+const afterDone = await say('thanks!', { from: noor });
+check('downloads: the next message follows as one turn with that request', afterDone.calls[0]?.body.contents.length === 1 && afterDone.calls[0].body.contents[0].parts[0].text.endsWith('sent to them]') && afterDone.calls[0].body.contents[0].parts[1].text === 'thanks!', afterDone.calls[0]?.body.contents);
 
-const ownerAsk = await say('.ai lock it down TOOL:genpass|12', { owner: true, wait: 1500 });
-const ownerNames: string[] = ownerAsk.calls[0]?.body.tools?.[0].functionDeclarations[0].parameters.properties.command.enum ?? [];
-check('commands: the ai command can use them too, with owner commands for the owner', ownerAsk.sent.length === 1 && ownerNames.includes('mode') && ownerNames.includes('antidelete') && !ownerNames.includes('ai'), { texts: ownerAsk.texts, owner: ownerNames.includes('mode') });
+// Memory written by the previous version carries the note the model learned to type out.
+const omar = newPerson();
+await prisma.aiMessage.createMany({
+  data: [
+    { sessionId: 'default', chatJid: omar, role: 'user', text: 'download lelena', createdAt: new Date(Date.now() - 4000) },
+    { sessionId: 'default', chatJid: omar, role: 'model', text: '[ran the command: yts lelena]', createdAt: new Date(Date.now() - 3000) },
+    { sessionId: 'default', chatJid: omar, role: 'user', text: 'what is 2+2', createdAt: new Date(Date.now() - 2000) },
+    { sessionId: 'default', chatJid: omar, role: 'model', text: 'It is 4.\n[ran the command: calc 2+2]', createdAt: new Date(Date.now() - 1000) }
+  ]
+});
+const cleaned = await say('and now?', { from: omar });
+const cleanedTurns = cleaned.calls[0]?.body.contents.map((turn: any) => [turn.role, turn.parts[0].text]);
+check('memory: notes left by the old version are taken out of the assistant\'s turns', !JSON.stringify(cleanedTurns).includes('ran the command') && cleanedTurns.length === 3 && cleanedTurns[0][1].startsWith('download lelena\n[system note') && cleanedTurns[0][1].includes('what is 2+2') && cleanedTurns[1][1] === 'It is 4.', cleanedTurns);
+const parrot = await say('PARROT download lelena');
+check('downloads: a typed-out note is never sent as a reply', !parrot.sent.some(item => JSON.stringify(item.content).includes('ran the command')), parrot.texts);
 
-await updateSettings({ commands: { mode: 'private' } });
-const locked = await say('TOOL:ping|');
-check('commands: in private mode a stranger is offered none', !locked.calls[0]?.body.tools && !locked.text.includes('Pong') && !locked.calls[0].body.systemInstruction.parts[0].text.includes('run_command'), locked.text);
+const two = await say('CALL:download_audio|{"query":""} CALL:download_video|{"query":"https://example.org/a"} CALL:download_video|{"query":"https://example.org/b"}', { wait: 1500 });
+check('downloads: at most two per message', two.sent.length === 2 && two.texts[0].includes('name of the song') && two.texts[1].includes('cannot download from that site'), two.texts);
+const invented = await say('CALL:run_command|{"command":"mode","arguments":"private"}', { wait: 1000 });
+check('downloads: a function that was not offered is not carried out', getSettings().commands.mode === 'public' && invented.sent.length === 0, invented.texts);
+const viaCommand = await say('.ai CALL:download_video|{"query":"https://example.org/x"}', { owner: true, wait: 1500 });
+check('downloads: the ai command can do the same', functionsIn(viaCommand.calls[0]).length === 2 && viaCommand.sent.length === 1 && viaCommand.text.includes('cannot download from that site'), viaCommand.texts);
+
+await updateSettings({ commands: { disabled: ['tiktok'] } });
+const offTikTok = await say('CALL:download_video|{"query":"https://vm.tiktok.com/ZMabc/"}', { wait: 1200 });
+check('downloads: a switched-off download command stays off', offTikTok.sent.length === 1 && offTikTok.text.includes('not available here') && !offTikTok.calls[0].body.systemInstruction.parts[0].text.includes('TikTok'), offTikTok.texts);
+await updateSettings({ commands: { disabled: [], mode: 'private' } });
+const locked = await say('CALL:download_audio|{"query":"lelena"}');
+check('downloads: in private mode a stranger is offered none', !locked.calls[0]?.body.tools && !locked.calls[0].body.systemInstruction.parts[0].text.includes('download_audio') && locked.text.includes('*Echo:*'), locked.text);
 await updateSettings({ commands: { mode: 'public' }, downloads: { enabled: false } });
-const noDownloads = await say('TOOL:ping|', { wait: 1000 });
-const withoutDownloads: string[] = noDownloads.calls[0]?.body.tools[0].functionDeclarations[0].parameters.properties.command.enum;
-check('commands: download commands are not offered while downloads are off', !withoutDownloads.includes('song') && !withoutDownloads.includes('yta') && withoutDownloads.includes('weather'));
-await updateSettings({ downloads: { enabled: true }, commands: { disabled: ['ping'] } });
-const disabledPing = await say('TOOL:ping|', { wait: 1000 });
-check('commands: a switched-off command is neither offered nor run', !disabledPing.calls[0].body.tools[0].functionDeclarations[0].parameters.properties.command.enum.includes('ping') && disabledPing.sent.length === 0, disabledPing.texts);
-await updateSettings({ commands: { disabled: [] }, ai: { commands: false } });
-const plain = await say('TOOL:ping|');
-check('commands: with the setting off the assistant only talks', !plain.calls[0]?.body.tools && plain.text.includes('*Echo:* TOOL:ping|') && !plain.text.includes('Pong'), plain.text);
-await updateSettings({ ai: { enabled: toolsBefore.enabled, scope: toolsBefore.scope, commands: true } });
+check('downloads: nor is anyone while downloads are switched off', !(await say('CALL:download_audio|{"query":"lelena"}')).calls[0]?.body.tools);
+await updateSettings({ downloads: { enabled: true }, ai: { downloads: false } });
+const plain = await say('CALL:download_audio|{"query":"lelena"}');
+check('downloads: with the setting off the assistant only talks', !plain.calls[0]?.body.tools && plain.text.includes('*Echo:* CALL:download_audio') && plain.sent.length === 1, plain.text);
+await updateSettings({ ai: { enabled: toolsBefore.enabled, scope: toolsBefore.scope, downloads: true } });
 
 // ================= voice notes =================
 const aiBefore = { ...getSettings().ai };

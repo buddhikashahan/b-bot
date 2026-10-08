@@ -369,10 +369,10 @@ export function AssistantPage() {
               onChange={images => saveSettings('ai', { images })}
             />
             <Toggle
-              label="Use the bot's commands"
-              description={`Lets the assistant act on requests like "download that song as MP3" or "what's the weather in Kandy" by running the matching command, also from ${settings.commands.prefix}ai. It can only use commands the person asking could type themselves, so owner and admin commands stay with owners and admins.`}
-              checked={ai.commands}
-              onChange={commands => saveSettings('ai', { commands })}
+              label="Download songs and videos on request"
+              description={`Ask it for a song or a video, or just send a YouTube, TikTok or Facebook link, and it sends the file without asking which format. Also works with ${settings.commands.prefix}ai. Only for people who may use the download commands themselves.`}
+              checked={ai.downloads}
+              onChange={downloads => saveSettings('ai', { downloads })}
             />
             <Toggle
               label="Listen to voice notes"

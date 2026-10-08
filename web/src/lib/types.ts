@@ -74,7 +74,7 @@ export interface Settings {
     groupTrigger: 'mention' | 'always';
     thinking: 'low' | 'medium' | 'high';
     images: boolean;
-    commands: boolean;
+    downloads: boolean;
     voiceNotes: boolean;
     voiceReplies: boolean;
     voice: string;

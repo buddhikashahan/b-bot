@@ -168,11 +168,10 @@ export const SettingsSchema = z.object({
       /** Look at photos people send. */
       images: z.boolean().default(true),
       /**
-       * Let the assistant run the bot's commands when someone asks for what a command does
-       * ("download that song as MP3", "what's the weather in Kandy"). It can only use commands
-       * the person asking could type themselves.
+       * Let the assistant download for people: asked for a song or a video, or sent a link to
+       * one, it sends the file. Only for people who could use the download commands themselves.
        */
-      commands: z.boolean().default(true),
+      downloads: z.boolean().default(true),
       /** Listen to voice notes people send. */
       voiceNotes: z.boolean().default(true),
       /** Answer a voice note with a voice note. Off answers it in text. */
