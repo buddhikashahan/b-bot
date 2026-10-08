@@ -58,7 +58,8 @@ Create the application from this repository. Both build packs work:
 - **Dockerfile** (recommended): the image this repository defines, with its own health check, a non-root
   user and everything the media commands need.
 - **Railpack** (Coolify's default): builds from `package.json`; `railpack.json` adds the fonts the photo
-  commands need. The health check has to be entered in Coolify (below).
+  commands need and the `curl` that Coolify's health check runs inside the container. The health check
+  has to be entered in Coolify (below).
 
 | Setting | Value |
 | --- | --- |

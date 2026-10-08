@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.railpack.com",
   "deploy": {
-    "aptPackages": ["fontconfig", "fonts-dejavu-core"]
+    "aptPackages": ["curl", "wget", "fontconfig", "fonts-dejavu-core"]
   }
 }
