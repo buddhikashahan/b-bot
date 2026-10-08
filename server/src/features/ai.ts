@@ -368,12 +368,45 @@ async function listSpeechModels(key: string): Promise<string[]> {
   return ids;
 }
 
+export interface SynthesizedSpeech {
+  audio: Buffer;
+  mimeType: string;
+  /**
+   * Set when `audio` is bare 16-bit samples with no header. Otherwise it is a complete audio
+   * file that describes itself.
+   */
+  raw?: { sampleRate: number; channels: number };
+}
+
+/** Does this audio start like a file (WAV, Ogg, FLAC, tagged MP3) rather than like bare samples? */
+function isAudioFile(audio: Buffer): boolean {
+  const magic = audio.subarray(0, 4).toString('latin1');
+  return magic === 'RIFF' || magic === 'OggS' || magic === 'fLaC' || magic.startsWith('ID3');
+}
+
+/**
+ * What a speech model answered with. The models differ: the 2.5 and 3.1 ones send bare
+ * samples ("audio/L16;codec=pcm;rate=24000"), the 3.8 ones a WAV file with a block of
+ * content-credential data after the sound. Read as bare samples, that file's header and
+ * trailing block become a click at the start and a burst of loud noise at the end.
+ */
+export function describeSpeech(audio: Buffer, mimeType = ''): SynthesizedSpeech {
+  if (isAudioFile(audio) || (mimeType && !/^audio\/(l16|pcm)\b/i.test(mimeType))) {
+    return { audio, mimeType: mimeType && !/l16|pcm/i.test(mimeType) ? mimeType.split(';')[0].trim() : 'audio/wav' };
+  }
+  return {
+    audio,
+    mimeType: 'audio/L16',
+    raw: { sampleRate: Number(/rate=(\d+)/i.exec(mimeType)?.[1]) || 24_000, channels: Number(/channels=(\d+)/i.exec(mimeType)?.[1]) || 1 }
+  };
+}
+
 /**
  * Turn text into speech with Gemini.
- * @returns raw 16-bit mono PCM and its sample rate
+ * @returns the audio as the model sent it: bare samples or a complete file (see `raw`)
  * @throws AiError when no key is saved or no speech model answers
  */
-export async function synthesizeSpeech(text: string, voice: string = VOICES[0]): Promise<{ pcm: Buffer; sampleRate: number }> {
+export async function synthesizeSpeech(text: string, voice: string = VOICES[0]): Promise<SynthesizedSpeech> {
   const key = await getApiKey();
   if (!key) throw new AiError('no-key', 'The AI assistant is not set up yet. The owner can add a Gemini API key in the dashboard.');
   let failure: unknown = new AiError('other', 'No speech model is available for this key.');
@@ -389,10 +422,7 @@ export async function synthesizeSpeech(text: string, voice: string = VOICES[0]):
         TIMEOUT_OVERRIDE_MS ?? SPEECH_TIMEOUT_MS
       );
       const audio = data.candidates?.[0]?.content?.parts?.find(part => part.inlineData?.data)?.inlineData;
-      if (audio?.data) {
-        // The mime type reads like "audio/L16;codec=pcm;rate=24000".
-        return { pcm: Buffer.from(audio.data, 'base64'), sampleRate: Number(/rate=(\d+)/.exec(audio.mimeType ?? '')?.[1]) || 24_000 };
-      }
+      if (audio?.data) return describeSpeech(Buffer.from(audio.data, 'base64'), audio.mimeType);
       failure = new AiError('other', 'The AI returned no audio for that text.');
     } catch (error) {
       failure = error;

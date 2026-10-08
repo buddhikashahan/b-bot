@@ -42,8 +42,30 @@ const server = http.createServer((req, res) => {
     if (model === 'busy-model') return send(503, { error: { code: 503, status: 'UNAVAILABLE', message: 'This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.' } });
     if (model === 'old-model' && body.generationConfig?.thinkingConfig) return send(400, { error: { message: 'Thinking level is not supported for this model.' } });
     if (body.generationConfig?.responseModalities?.includes('AUDIO')) {
-      const silence = Buffer.alloc(24_000 * 2 * 0.3).toString('base64');
-      return send(200, { candidates: [{ content: { parts: [{ inlineData: { mimeType: 'audio/L16;codec=pcm;rate=24000', data: silence } }] } }] });
+      const silence = Buffer.alloc(24_000 * 2 * 0.3);
+      if (body.contents[0].parts[0].text.includes('WAVPLEASE')) {
+        // What the newest speech models send: a WAV file with a metadata block after the sound.
+        const header = Buffer.alloc(44);
+        header.write('RIFF', 0);
+        header.write('WAVEfmt ', 8);
+        header.writeUInt32LE(16, 16);
+        header.writeUInt16LE(1, 20);
+        header.writeUInt16LE(1, 22);
+        header.writeUInt32LE(24_000, 24);
+        header.writeUInt32LE(48_000, 28);
+        header.writeUInt16LE(2, 32);
+        header.writeUInt16LE(16, 34);
+        header.write('data', 36);
+        header.writeUInt32LE(silence.length, 40);
+        const credentials = Buffer.alloc(6000, 0x7f);
+        const tail = Buffer.alloc(8);
+        tail.write('C2PA', 0);
+        tail.writeUInt32LE(credentials.length, 4);
+        const file = Buffer.concat([header, silence, tail, credentials]);
+        file.writeUInt32LE(file.length - 8, 4);
+        return send(200, { candidates: [{ content: { parts: [{ inlineData: { mimeType: 'audio/wav', data: file.toString('base64') } }] } }] });
+      }
+      return send(200, { candidates: [{ content: { parts: [{ inlineData: { mimeType: 'audio/L16;codec=pcm;rate=24000', data: silence.toString('base64') } }] } }] });
     }
     const last = body.contents.at(-1);
     const text = last.parts.map((p: any) => p.text ?? '').join(' ');
@@ -435,6 +457,23 @@ check('tts: goes out as a voice note when ffmpeg is there, a WAV file otherwise'
 const voiced = await say('.tts puck Hello', { wait: 3500 });
 check('tts: a voice can be chosen', voiced.calls.find(call => call.model.includes('tts'))?.body.generationConfig.speechConfig.voiceConfig.prebuiltVoiceConfig.voiceName === 'Puck' && voiced.calls[0].body.contents[0].parts[0].text === 'Hello');
 check('tts: explains itself without text', (await say('.tts')).text.includes('tts [voice] <text>'));
+
+// The newest speech models answer with a WAV file, not bare samples. Everything in it that is
+// not sound (the header, the metadata after the audio) must stay out of the voice note.
+const described = ai.describeSpeech(Buffer.from('RIFF....WAVEfmt '), 'audio/wav');
+const bare = ai.describeSpeech(Buffer.alloc(64), 'audio/l16; rate=16000; channels=2');
+check('speech: files and bare samples are told apart', !described.raw && described.mimeType === 'audio/wav' && bare.raw?.sampleRate === 16000 && bare.raw.channels === 2 && ai.describeSpeech(Buffer.alloc(64)).raw?.sampleRate === 24000 && !ai.describeSpeech(Buffer.from('RIFF....WAVE'), 'audio/L16;rate=24000').raw);
+const fromWav = (await say('.tts WAVPLEASE hello', { wait: 3500 })).sent.find(item => item.content.audio || item.content.document)?.content;
+if (fromWav?.ptt) {
+  const tools = await src('features/media-tools.ts');
+  const samples: Buffer = await tools.convert(fromWav.audio, [], ['-f', 's16le', '-ar', '24000', '-ac', '1'], 'raw');
+  let peak = 0;
+  for (let offset = 0; offset + 1 < samples.length; offset += 2) peak = Math.max(peak, Math.abs(samples.readInt16LE(offset)));
+  const seconds = samples.length / 2 / 24_000;
+  check('tts: a WAV answer becomes a voice note with only its sound, no noise from the file around it', peak < 200 && seconds > 0.25 && seconds < 0.4, { peak, seconds });
+} else {
+  check('tts: without ffmpeg a WAV answer is passed on as it is', fromWav?.mimetype === 'audio/wav' && fromWav.fileName === 'speech.wav', fromWav && { ...fromWav, audio: undefined, document: undefined });
+}
 
 const translated = await say('.translate sinhala Good morning');
 check('translate: language by name, done by the AI', translated.text.includes('*Translation*') && translated.text.includes('*To:* Sinhala') && translated.text.includes('*Echo:* Good morning') && /into Sinhala/.test(translated.calls[0]?.body.systemInstruction.parts[0].text), translated.text);

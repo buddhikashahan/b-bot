@@ -58,17 +58,17 @@ export function chunkText(text: string, size = BASIC_CHUNK_CHARS): string[] {
 }
 
 /** 16-bit PCM in a WAV container, for servers without ffmpeg. */
-function wav(pcm: Buffer, sampleRate: number): Buffer {
+function wav(pcm: Buffer, sampleRate: number, channels = 1): Buffer {
   const header = Buffer.alloc(44);
   header.write('RIFF', 0);
   header.writeUInt32LE(36 + pcm.length, 4);
   header.write('WAVEfmt ', 8);
   header.writeUInt32LE(16, 16);
   header.writeUInt16LE(1, 20); // PCM
-  header.writeUInt16LE(1, 22); // mono
+  header.writeUInt16LE(channels, 22);
   header.writeUInt32LE(sampleRate, 24);
-  header.writeUInt32LE(sampleRate * 2, 28);
-  header.writeUInt16LE(2, 32);
+  header.writeUInt32LE(sampleRate * 2 * channels, 28);
+  header.writeUInt16LE(2 * channels, 32);
   header.writeUInt16LE(16, 34);
   header.write('data', 36);
   header.writeUInt32LE(pcm.length, 40);
@@ -100,9 +100,14 @@ export async function speak(text: string, voice?: string): Promise<Speech> {
   const canConvert = Boolean(await ffmpeg());
   if (await getApiKey()) {
     try {
-      const { pcm, sampleRate } = await synthesizeSpeech(text.slice(0, MAX_SPEECH_CHARS), voice);
-      if (!canConvert) return { audio: wav(pcm, sampleRate), mimetype: 'audio/wav', voiceNote: false, engine: 'ai' };
-      const audio = await toVoiceNote(pcm, ['-f', 's16le', '-ar', String(sampleRate), '-ac', '1']);
+      const spoken = await synthesizeSpeech(text.slice(0, MAX_SPEECH_CHARS), voice);
+      const { raw } = spoken;
+      if (!canConvert) {
+        const audio = raw ? wav(spoken.audio, raw.sampleRate, raw.channels) : spoken.audio;
+        return { audio, mimetype: raw ? 'audio/wav' : spoken.mimeType, voiceNote: false, engine: 'ai' };
+      }
+      // Bare samples have to be described to ffmpeg; a file describes itself.
+      const audio = await toVoiceNote(spoken.audio, raw ? ['-f', 's16le', '-ar', String(raw.sampleRate), '-ac', String(raw.channels)] : []);
       return { audio, mimetype: 'audio/ogg; codecs=opus', voiceNote: true, engine: 'ai' };
     } catch (error) {
       if (!(error instanceof AiError)) throw error;
