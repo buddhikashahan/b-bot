@@ -10,6 +10,7 @@ import { ZodError } from 'zod';
 import { SESSION_COOKIE, verifyToken } from '../auth/dashboard-auth.js';
 import { bus, type LiveEvent } from '../bus.js';
 import { config } from '../config.js';
+import { prisma } from '../db.js';
 import { recentLogs, scoped } from '../logger.js';
 import { getSettings } from '../settings.js';
 import { sessions } from '../whatsapp/session-manager.js';
@@ -20,6 +21,8 @@ import { registerSystemRoutes } from './system-routes.js';
 
 const log = scoped('http');
 const PUBLIC_API = new Set(['/api/health']);
+/** A stuck database must not hang the probe: checkers give up after about five seconds. */
+const HEALTH_DB_TIMEOUT_MS = 3000;
 /** Stop queueing live events for a dashboard tab that has stopped reading. */
 const MAX_WS_BACKLOG_BYTES = 1024 * 1024;
 const CSP = [
@@ -93,7 +96,24 @@ export async function buildServer(): Promise<FastifyInstance> {
     bodyLimit: 1024 * 1024
   });
   registerErrorHandling(app);
-  app.get('/api/health', async () => ({ ok: true }));
+  // Readiness probe for Docker, Coolify and uptime monitors: the server answers and the database
+  // can be read. WhatsApp's connection is deliberately left out: a bot that is not linked yet, or
+  // is reconnecting, is still a healthy container, and failing here would roll back the deployment.
+  app.get('/api/health', async (_req, reply) => {
+    let timer: NodeJS.Timeout | undefined;
+    const database = await Promise.race([
+      prisma.setting.findFirst({ select: { key: true } }).then(
+        () => true,
+        () => false
+      ),
+      new Promise<boolean>(resolve => (timer = setTimeout(() => resolve(false), HEALTH_DB_TIMEOUT_MS)))
+    ]);
+    clearTimeout(timer);
+    return reply
+      .code(database ? 200 : 503)
+      .header('Cache-Control', 'no-store')
+      .send({ ok: database, database: database ? 'ok' : 'unreachable', uptime: Math.round(process.uptime()) });
+  });
 
   // Headless: the terminal is the UI. Keep only the health probe for Docker / uptime checks.
   if (config.headless) return app;

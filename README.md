@@ -46,6 +46,35 @@ All state lives in the `bbot-data` volume. The container runs as the non-root `n
 If the port is reachable by other people, set `DASHBOARD_PASSWORD` in `.env` before the first start;
 otherwise whoever opens the dashboard first picks the password.
 
+**Health check.** `GET /api/health` needs no login and answers `200 {"ok":true,...}` while the server is
+up and can read its database, `503` otherwise. Whether WhatsApp is linked is deliberately not part of it:
+a bot waiting to be paired is still a healthy container. The image declares this as its Docker
+`HEALTHCHECK` (every 15 s, 5 s timeout, 3 retries, 90 s start period), so `docker ps` shows `healthy`.
+
+### Coolify
+
+Create the application from this repository with the **Dockerfile** build pack (not Nixpacks, which
+would skip the fonts and the health check the image sets up).
+
+| Setting | Value |
+| --- | --- |
+| Ports Exposes | `3000` |
+| Persistent storage | a volume mounted at `/app/data` (the WhatsApp link, database and settings live there) |
+| Environment | `TRUST_PROXY=true`, `DASHBOARD_PASSWORD=<yours>`, optionally `TZ` and `DATABASE_URL` |
+| Container name (General) | any fixed name, e.g. `b-bot`: see the note below |
+
+The health check needs no configuration: Coolify detects the `HEALTHCHECK` in the Dockerfile and uses it
+in place of the one in its dashboard. If you would rather manage it under **Configuration > Healthcheck**
+(for an image built another way), these are the values: method `GET`, scheme `http`, host `localhost`,
+port `3000`, path `/api/health`, interval `15`, timeout `5`, retries `3`, start period `90`. The image
+ships `curl`, which Coolify runs inside the container for that check.
+
+Set a fixed container name. With a passing health check and the default name, Coolify deploys by
+starting the new container next to the old one and only then stopping the old one. For a moment two bots
+would share one WhatsApp link and one data folder: WhatsApp drops one of the two connections and both may
+answer the same message. A fixed container name makes Coolify stop the old container first, at the price
+of a few seconds without the dashboard.
+
 ### Node.js
 
 Requires Node.js 20.12 or newer.

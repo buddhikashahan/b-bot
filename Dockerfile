@@ -27,8 +27,10 @@ ENV NODE_ENV=production \
     PORT=3000 \
     DATA_DIR=/app/data
 # fontconfig + DejaVu: the photo commands draw text (meme captions), and the slim image ships no fonts.
+# curl: for the health check below, and for platforms (Coolify and the like) that run their own
+# HTTP check from inside the container and need curl or wget to do it.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends openssl ca-certificates tini fontconfig fonts-dejavu-core \
+  && apt-get install -y --no-install-recommends openssl ca-certificates tini curl fontconfig fonts-dejavu-core \
   && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 
@@ -50,8 +52,9 @@ USER node
 VOLUME /app/data
 EXPOSE 3000
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
-  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+# Healthy once the server answers and can read its database. Checked every 15 seconds so a new
+# deployment is recognised quickly; the first start may spend a while preparing the database.
+HEALTHCHECK --interval=15s --timeout=5s --start-period=90s --retries=3 CMD curl -fsS -o /dev/null "http://127.0.0.1:${PORT:-3000}/api/health" || exit 1
 
 ENTRYPOINT ["tini", "--"]
 CMD ["node", "server/scripts/start.mjs"]
