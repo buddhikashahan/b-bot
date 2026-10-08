@@ -5,7 +5,7 @@
   "description": "Self-hostable WhatsApp bot and management dashboard powered by Baileys",
   "type": "module",
   "engines": {
-    "node": ">=20.12"
+    "node": ">=22"
   },
   "workspaces": [
     "server",

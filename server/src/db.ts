@@ -20,8 +20,11 @@ export const prisma = new PrismaClient({ datasourceUrl: datasourceUrl() });
 export async function connectDatabase(): Promise<void> {
   await prisma.$connect();
   if (isSqlite) {
-    await prisma.$queryRawUnsafe('PRAGMA journal_mode = WAL');
-    await prisma.$queryRawUnsafe('PRAGMA busy_timeout = 5000');
+    // The client is generated for whichever database is configured when the server is built,
+    // and the one for MongoDB has no raw SQL methods. Hence the cast: this must compile for all of them.
+    const sql = prisma as unknown as { $queryRawUnsafe(query: string): Promise<unknown> };
+    await sql.$queryRawUnsafe('PRAGMA journal_mode = WAL');
+    await sql.$queryRawUnsafe('PRAGMA busy_timeout = 5000');
   }
   log.info(`connected (${config.database.provider})`);
 }

@@ -38,6 +38,15 @@ jobs:
       # Offline suites only: each runs against its own throwaway SQLite database.
       - run: npm test
 
+      # Platforms that build with DATABASE_URL set (Coolify, Railway...) generate the database
+      # client for that database, and the clients differ: MongoDB's has no raw SQL, for one.
+      - name: Compile against every database client
+        run: |
+          for url in mongodb://u:p@localhost/bbot postgresql://u:p@localhost/bbot mysql://u:p@localhost/bbot; do
+            DATABASE_URL="$url" node server/scripts/prepare-db.mjs --generate-only
+            npm run typecheck -w server
+          done
+
   docker:
     name: Docker image
     runs-on: ubuntu-latest

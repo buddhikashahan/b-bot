@@ -53,8 +53,12 @@ a bot waiting to be paired is still a healthy container. The image declares this
 
 ### Coolify
 
-Create the application from this repository with the **Dockerfile** build pack (not Nixpacks, which
-would skip the fonts and the health check the image sets up).
+Create the application from this repository. Both build packs work:
+
+- **Dockerfile** (recommended): the image this repository defines, with its own health check, a non-root
+  user and everything the media commands need.
+- **Railpack** (Coolify's default): builds from `package.json`; `railpack.json` adds the fonts the photo
+  commands need. The health check has to be entered in Coolify (below).
 
 | Setting | Value |
 | --- | --- |
@@ -63,11 +67,16 @@ would skip the fonts and the health check the image sets up).
 | Environment | `TRUST_PROXY=true`, `DASHBOARD_PASSWORD=<yours>`, optionally `TZ` and `DATABASE_URL` |
 | Container name (General) | any fixed name, e.g. `b-bot`: see the note below |
 
-The health check needs no configuration: Coolify detects the `HEALTHCHECK` in the Dockerfile and uses it
-in place of the one in its dashboard. If you would rather manage it under **Configuration > Healthcheck**
-(for an image built another way), these are the values: method `GET`, scheme `http`, host `localhost`,
-port `3000`, path `/api/health`, interval `15`, timeout `5`, retries `3`, start period `90`. The image
-ships `curl`, which Coolify runs inside the container for that check.
+**Health check.** With the Dockerfile build pack there is nothing to configure: Coolify detects the
+`HEALTHCHECK` in the Dockerfile and uses it in place of the one in its dashboard. With Railpack, enable
+it under **Configuration > Healthcheck**: method `GET`, scheme `http`, host `localhost`, port `3000`, path
+`/api/health`, interval `15`, timeout `5`, retries `3`, start period `90`.
+
+**Database.** Leave `DATABASE_URL` unset to keep everything in the SQLite file on the volume, or point it
+at PostgreSQL, MySQL or MongoDB. MongoDB has to run as a replica set (Atlas does; a single MongoDB
+container does not unless it is started as one), because the database layer uses transactions. The
+volume is still needed with an external database: the WhatsApp link is kept on disk unless you also set
+`AUTH_STORE=database`.
 
 Set a fixed container name. With a passing health check and the default name, Coolify deploys by
 starting the new container next to the old one and only then stopping the old one. For a moment two bots
@@ -77,7 +86,7 @@ of a few seconds without the dashboard.
 
 ### Node.js
 
-Requires Node.js 20.12 or newer.
+Requires Node.js 22 or newer.
 
 ```bash
 npm install
