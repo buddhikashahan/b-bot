@@ -232,7 +232,6 @@ interface RawEntry {
   ie_key?: string;
   thumbnail?: string;
   thumbnails?: { url?: string; width?: number }[];
-  formats?: { height?: number | null; vcodec?: string | null; acodec?: string | null; filesize?: number | null; filesize_approx?: number | null; tbr?: number | null }[];
   entries?: RawEntry[];
 }
 
@@ -261,52 +260,6 @@ async function baseArgs(): Promise<string[]> {
 }
 
 /** Search YouTube. */
-/** Bit rates (kbit/s, picture and sound) that video sites typically use at each picture height. */
-const TYPICAL_KBPS: [height: number, kbps: number][] = [
-  [240, 400],
-  [360, 650],
-  [480, 900],
-  [720, 1700],
-  [1080, 3000]
-];
-
-/**
- * Roughly how big a video will be at a given quality, from what the site says about its streams:
- * a stated size if there is one, else bit rate times length, else a typical bit rate for that
- * picture height times length. An estimate, good for "about 80 MB" and not for enforcing a limit.
- */
-export function estimateSize(raw: { duration?: number; formats?: RawEntry['formats'] }, maxHeight: number): number | undefined {
-  // Everything with a picture; sites that say nothing about the codec still say the height.
-  const video = (raw.formats ?? []).filter(format => format.vcodec !== 'none' && format.height);
-  if (video.length === 0) return undefined;
-  const heights = [...new Set(video.map(format => format.height as number))].sort((x, y) => x - y);
-  // The best quality that fits, or failing that the smallest there is.
-  const height = heights.filter(value => value <= maxHeight).at(-1) ?? heights[0];
-  const candidates = video.filter(format => format.height === height);
-  const stated = candidates.map(format => format.filesize ?? format.filesize_approx ?? 0).find(Boolean);
-  if (stated) return stated;
-  if (!raw.duration) return undefined;
-  const measured = candidates.find(format => format.tbr);
-  // A stream without sound gets a typical sound track added.
-  const kbps = measured?.tbr
-    ? measured.tbr + (measured.acodec === 'none' ? 128 : 0)
-    : (TYPICAL_KBPS.filter(([typical]) => typical <= height).at(-1) ?? TYPICAL_KBPS[0])[1];
-  return Math.round((kbps * 1000 * raw.duration) / 8);
-}
-
-/** Details of one video, with an estimate of its size at `maxHeight`. */
-export async function lookupVideo(url: string, maxHeight: number): Promise<MediaInfo & { approxBytes?: number }> {
-  const bin = await ytDlp();
-  try {
-    const { stdout } = await run(bin, [...(await baseArgs()), '--no-playlist', '--playlist-items', '1', '--dump-single-json', url], LOOKUP_TIMEOUT_MS);
-    const parsed = JSON.parse(stdout) as RawEntry;
-    const raw = parsed.entries?.[0] ?? parsed;
-    return { ...toInfo(raw), approxBytes: estimateSize(raw, maxHeight) };
-  } catch (error) {
-    throw explain(error);
-  }
-}
-
 /**
  * The videos listed on a page (a site's search results, a playlist), without downloading any.
  * @param pageUrl must already have passed parseMediaUrl

@@ -1,18 +1,17 @@
 import { ADULT_AGE, adultSearchUrl, checkAgeProof, isVerifiedAdult, parseAdultUrl, setVerifiedAdult, takeAttempt } from '../../features/adult.js';
 import { getApiKey } from '../../features/ai.js';
-import { findUrl, listVideos, lookupVideo } from '../../features/downloader.js';
+import { findUrl, listVideos } from '../../features/downloader.js';
 import { parseTargets } from '../../features/forward.js';
 import { sendMenu, type MenuOption } from '../../features/menus.js';
 import { updateSettings } from '../../settings.js';
-import { bold, card, clock, code, fail, field, fileSize, italic, note, quote, usage } from '../../whatsapp/format.js';
+import { bold, card, clock, code, fail, field, italic, note, quote, usage } from '../../whatsapp/format.js';
 import { contentOf, displayNumber } from '../../whatsapp/message-utils.js';
 import type { Command, CommandContext } from '../types.js';
 import { allowed, attempt, deliver } from './download.js';
 
 /** The quality videos are fetched in: watchable on a phone without being huge. */
 const VIDEO_HEIGHT = 480;
-/** Each result is opened for its length and size, so the list is kept short enough to stay quick. */
-const SEARCH_RESULTS = 6;
+const SEARCH_RESULTS = 8;
 
 /**
  * The gate in front of every 18+ command: switched on, a private chat, and a confirmed adult.
@@ -135,7 +134,7 @@ export const adultCommands: Command[] = [
     name: 'phsearch',
     aliases: ['ph', 'pornhub'],
     category: 'adult',
-    description: 'Search Pornhub: titles with their length and size. Reply with a number to download a result.',
+    description: 'Search Pornhub. Reply with a number to download a result.',
     usage: 'phsearch <words>',
     cooldown: 10,
     async execute(ctx) {
@@ -153,35 +152,13 @@ export const adultCommands: Command[] = [
         await ctx.reply(fail('Nothing found', `No result for "${query}".`));
         return;
       }
-      // The result list has titles only: each video is opened for its length and size, all at
-      // once. One that cannot be opened is still listed, without them.
-      const details = new Map<string, Awaited<ReturnType<typeof lookupVideo>>>();
-      await Promise.all(
-        found.map(item =>
-          lookupVideo(item.url, VIDEO_HEIGHT).then(
-            info => details.set(item.url, info),
-            () => undefined
-          )
-        )
-      );
-      const { maxSizeMb, maxDocumentMb, maxMinutes } = ctx.settings.downloads;
-      const megabyte = 1024 * 1024;
-      // Text only: no thumbnails, so nothing explicit appears in the chat list or a notification.
-      const options: MenuOption[] = found.map(item => {
-        const info = details.get(item.url);
-        const seconds = info?.durationSeconds ?? item.durationSeconds;
-        const size = info?.approxBytes;
-        const delivery =
-          seconds && seconds > maxMinutes * 60
-            ? `⛔ longer than the ${maxMinutes} min limit`
-            : size && size > Math.max(maxSizeMb, maxDocumentMb) * megabyte
-              ? '📉 comes in a lower quality'
-              : size && size > Math.min(64, maxSizeMb) * megabyte
-                ? '📄 comes as a document'
-                : '';
-        const facts = [seconds ? `⏱️ ${clock(seconds)}` : '', size ? `📦 about ${fileSize(size)}` : '', delivery].filter(Boolean).join('  ');
-        return { label: `${bold(item.title.slice(0, 90))}${facts ? `\n   ${facts}` : ''}`, action: { type: 'command', text: `phdl ${item.url}` } };
-      });
+      // Titles only: finding each video's length would mean opening every result, which takes many
+      // times longer than the search. Text only too: no thumbnails, so nothing explicit appears in
+      // the chat list or a notification.
+      const options: MenuOption[] = found.map(item => ({
+        label: `${bold(item.title.slice(0, 90))}${item.durationSeconds ? `\n   ⏱️ ${clock(item.durationSeconds)}` : ''}`,
+        action: { type: 'command', text: `phdl ${item.url}` }
+      }));
       await sendMenu(ctx.bot, ctx.jid, {
         header: card('🔞', 'Search results', [field('Query', query), field('Results', found.length)]),
         options,

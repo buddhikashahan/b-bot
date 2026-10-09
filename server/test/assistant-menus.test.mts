@@ -582,22 +582,6 @@ check(
 );
 check('adult links: only the adult sites, never a local address', Boolean(adultFeature.parseAdultUrl('https://www.pornhub.com/view_video.php?viewkey=abc123')) && !adultFeature.parseAdultUrl('https://www.youtube.com/watch?v=abc') && !adultFeature.parseAdultUrl('https://pornhub.com.evil.example/x') && !adultFeature.parseAdultUrl('http://127.0.0.1/pornhub.com'));
 
-const sizing = await src('features/downloader.ts');
-const megabytes = (bytes: number | undefined) => (bytes === undefined ? undefined : Math.round(bytes / 1024 / 1024));
-const streams = (extra: object[]) => [{ height: 240 }, { height: 480 }, { height: 720 }, { height: 1080 }, ...extra];
-check(
-  'sizes: from the bit rate the site reports for the chosen quality',
-  megabytes(sizing.estimateSize({ duration: 840, formats: streams([{ height: 480, tbr: 798.842, vcodec: 'avc1', acodec: 'mp4a' }, { height: 1080, tbr: 2250, vcodec: 'avc1', acodec: 'mp4a' }]) }, 480)) === 80 &&
-    megabytes(sizing.estimateSize({ duration: 600, formats: [{ height: 480, tbr: 800, vcodec: 'avc1', acodec: 'none' }] }, 480)) === 66
-);
-check(
-  'sizes: a stated size wins; with nothing reported, a typical bit rate for that height is used',
-  sizing.estimateSize({ duration: 600, formats: [{ height: 480, filesize: 12_345_678, tbr: 800 }] }, 480) === 12_345_678 && megabytes(sizing.estimateSize({ duration: 1508, formats: streams([]) }, 480)) === 162 && megabytes(sizing.estimateSize({ duration: 1508, formats: streams([]) }, 720)) === 306
-);
-check(
-  'sizes: no guess without a length or without any picture',
-  sizing.estimateSize({ formats: streams([]) }, 480) === undefined && sizing.estimateSize({ duration: 100, formats: [{ height: null, vcodec: 'none', tbr: 128 }] }, 480) === undefined && megabytes(sizing.estimateSize({ duration: 100, formats: [{ height: 1080 }] }, 480)) === 36
-);
 check('18+: off by default, and says so', (await say('.phsearch something')).text.includes('18+ features are switched off') && (await say('.verify')).text.includes('switched off'));
 check('18+: not in the menu while off', !(await say('.menu')).text.includes('18+'));
 await say('.adult on', { owner: true });

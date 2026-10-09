@@ -357,9 +357,9 @@ counts and `.resetwarn @user` clears one.
 
 **18+ commands.** Off unless you switch them on (**Access > 18+ commands**, or `.adult on`). They are
 `.phsearch <words>` and `.phdl <link>` for Pornhub, they work only in private chats, never in groups, and
-only for people confirmed as adults; the AI assistant is never given them. Search results are text only
-and show each video's length and approximate size, and whether it will arrive as a document: a video too
-big to play in the chat is sent as a file, up to the document limit on the **Commands** page. A person is confirmed by an
+only for people confirmed as adults; the AI assistant is never given them. Search results are text only,
+titles without thumbnails. A video too big to play in the chat is sent as a file, up to the document
+limit on the **Commands** page. A person is confirmed by an
 owner (`.adult allow <number>`, or the Access page) or by `.verify`: they send a photo of an ID card,
 passport or driving licence, Gemini reads the date of birth, and the bot does the arithmetic. The photo is
 not kept; only the number is remembered as verified. Be clear about what that check is worth: it reads a
