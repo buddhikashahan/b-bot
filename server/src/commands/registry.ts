@@ -12,6 +12,7 @@ import type { BotSession } from '../whatsapp/session.js';
 import { bold, command as commandText, fail, quote } from '../whatsapp/format.js';
 import { downloadTools } from './assistant-tools.js';
 import { adminCommands } from './builtin/admin.js';
+import { adultCommands } from './builtin/adult.js';
 import { aiCommands } from './builtin/ai.js';
 import { discoverCommands } from './builtin/discover.js';
 import { downloadCommands } from './builtin/download.js';
@@ -75,7 +76,8 @@ export async function loadCommands(): Promise<void> {
     ...languageCommands,
     ...utilityCommands,
     ...adminCommands,
-    ...funCommands
+    ...funCommands,
+    ...adultCommands
   ];
   for (const command of builtin) {
     registerCommand(command, 'builtin');
@@ -214,7 +216,8 @@ export async function commandsFor(bot: BotSession, msg: WAMessage): Promise<stri
   return [...commands.values()]
     .filter(command => {
       // The assistant is the AI: its own commands would only have it talk to itself.
-      if (command.category === 'ai' || settings.commands.disabled.includes(command.name)) return false;
+      // And it never reaches for the 18+ commands on anyone's behalf.
+      if (command.category === 'ai' || command.category === 'adult' || settings.commands.disabled.includes(command.name)) return false;
       if (command.category === 'download' && !downloads) return false;
       if (command.ownerOnly && !isOwner) return false;
       if ((command.groupOnly || command.adminOnly || command.botAdmin) && !isGroup) return false;

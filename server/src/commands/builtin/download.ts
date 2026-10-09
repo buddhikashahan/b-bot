@@ -37,12 +37,17 @@ const SITE_LABEL: Record<Site, string> = {
 };
 
 /** What to fetch and how to hand it over. */
-interface Delivery {
+export interface Delivery {
   kind: MediaKind;
   audio?: AudioQuality;
   maxHeight?: number;
   /** Send as a file attachment instead of playable media. */
   asDocument?: boolean;
+  /**
+   * When the video is too big to send as a playable one, send it as a file instead of a
+   * lower quality: for long videos, where the smaller version would be unwatchable.
+   */
+  largeAsDocument?: boolean;
   /** Send audio as a voice note. */
   voice?: boolean;
   /** Post the details card (with thumbnail) before the file: for commands with no earlier preview. */
@@ -50,7 +55,7 @@ interface Delivery {
 }
 
 /** Check the feature switches; replies and returns false when the caller may not download. */
-async function allowed(ctx: CommandContext): Promise<boolean> {
+export async function allowed(ctx: CommandContext): Promise<boolean> {
   const { downloads } = ctx.settings;
   if (!downloads.enabled) {
     await ctx.reply(fail('Downloads are switched off', 'The owner can turn them on in the dashboard.'));
@@ -74,7 +79,7 @@ function infoRows(info: MediaInfo, sizeBytes?: number): string[] {
 }
 
 /** Run a download step and turn expected failures into a reply. Returns undefined when it failed. */
-async function attempt<T>(ctx: CommandContext, title: string, work: () => Promise<T>): Promise<T | undefined> {
+export async function attempt<T>(ctx: CommandContext, title: string, work: () => Promise<T>): Promise<T | undefined> {
   try {
     return await work();
   } catch (error) {
@@ -86,11 +91,13 @@ async function attempt<T>(ctx: CommandContext, title: string, work: () => Promis
 }
 
 /** Download `url` and deliver it to the chat, with reactions as a progress indicator. */
-async function deliver(ctx: CommandContext, url: string, delivery: Delivery, icon: string, heading: string): Promise<void> {
-  const { maxSizeMb, maxMinutes } = ctx.settings.downloads;
+export async function deliver(ctx: CommandContext, url: string, delivery: Delivery, icon: string, heading: string): Promise<void> {
+  const { maxSizeMb, maxDocumentMb, maxMinutes } = ctx.settings.downloads;
+  // What goes out as a file may be bigger than what goes out as playable media.
+  const limit = delivery.asDocument || delivery.largeAsDocument ? Math.max(maxSizeMb, maxDocumentMb) : maxSizeMb;
   await ctx.react('⏳');
   const media = await attempt(ctx, 'Download failed', () =>
-    downloadMedia(url, delivery.kind, { maxSizeMb, maxMinutes }, { audio: delivery.audio, maxHeight: delivery.maxHeight })
+    downloadMedia(url, delivery.kind, { maxSizeMb: limit, maxMinutes }, { audio: delivery.audio, maxHeight: delivery.maxHeight })
   );
   if (!media) return;
 
@@ -108,7 +115,8 @@ async function deliver(ctx: CommandContext, url: string, delivery: Delivery, ico
     }
 
     // Very large videos, and containers WhatsApp cannot play, go out as files.
-    const asDocument = delivery.asDocument || !media.playable || (delivery.kind === 'video' && media.sizeBytes > 64 * 1024 * 1024);
+    const megabytes = media.sizeBytes / (1024 * 1024);
+    const asDocument = delivery.asDocument || !media.playable || (delivery.kind === 'video' && megabytes > Math.min(64, delivery.largeAsDocument ? maxSizeMb : 64));
     if (delivery.voice) {
       const voice = await attempt(ctx, 'Could not make a voice note', () => toVoiceNote({ file: media.file }));
       if (!voice) return;

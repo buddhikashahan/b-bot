@@ -23,6 +23,8 @@ function GroupEditor({ group, onSaved }: { group: GroupConfig; onSaved: (group: 
         antiLinkMode: draft.antiLinkMode,
         antiLinkAction: draft.antiLinkAction,
         warnLimit: draft.warnLimit,
+        antiBadWords: draft.antiBadWords,
+        badWordAction: draft.badWordAction,
         whitelist: whitelist.split(/[\n,]+/).map(entry => entry.trim()).filter(Boolean),
         welcomeEnabled: draft.welcomeEnabled,
         welcomeTemplate: draft.welcomeTemplate,
@@ -87,6 +89,31 @@ function GroupEditor({ group, onSaved }: { group: GroupConfig; onSaved: (group: 
                 <Textarea rows={3} placeholder={'youtube.com\ngithub.com'} value={whitelist} onChange={event => setWhitelist(event.target.value)} />
               </Field>
             </div>
+          </div>
+        )}
+      </div>
+
+      <div>
+        <Toggle
+          label="Bad-language filter"
+          description="Delete abusive language, in English and Sinhala (Sinhala or English letters). Group admins and bot owners are never filtered."
+          checked={draft.antiBadWords}
+          onChange={antiBadWords => set({ antiBadWords })}
+        />
+        {draft.antiBadWords && (
+          <div className="mt-3 grid gap-4 md:grid-cols-3">
+            <Field label="Then">
+              <Select value={draft.badWordAction} onChange={event => set({ badWordAction: event.target.value as GroupConfig['badWordAction'] })}>
+                <option value="delete">Delete the message</option>
+                <option value="warn">Delete and warn</option>
+                <option value="kick">Delete and remove the member</option>
+              </Select>
+            </Field>
+            {draft.badWordAction === 'warn' && (
+              <Field label="Remove after this many warnings" hint="Shared with link warnings.">
+                <Input type="number" min={1} max={20} value={draft.warnLimit} onChange={event => set({ warnLimit: Number(event.target.value) })} />
+              </Field>
+            )}
           </div>
         )}
       </div>
@@ -208,6 +235,7 @@ export function GroupsPage() {
                       </Badge>
                     )}
                     {group.antiLink && <Badge tone="good">Anti-link</Badge>}
+                    {group.antiBadWords && <Badge tone="good">Language filter</Badge>}
                     {group.welcomeEnabled && <Badge tone="good">Welcome</Badge>}
                     {group.farewellEnabled && <Badge tone="good">Farewell</Badge>}
                     <ChevronDown className={cx('h-4 w-4 text-muted transition-transform', expanded && 'rotate-180')} />
@@ -226,6 +254,25 @@ export function GroupsPage() {
           })}
           {visible.length === 0 && <p className="text-sm text-muted">No group matches "{query}".</p>}
         </div>
+      )}
+
+      {settings && (
+        <Card
+          className="mt-6"
+          title="Extra words for the bad-language filter"
+          description="The filter has its own list of English and Sinhala insults. Add words of your own here, one per line; they apply in every group where the filter is on. Saved when you click away."
+        >
+          <CommitTextarea
+            rows={3}
+            placeholder={'one word per line'}
+            value={settings.moderation.badWords.join('\n')}
+            onCommit={value =>
+              saveSettings('moderation', {
+                badWords: [...new Set(value.split(/[\n,]+/).map(word => word.trim().toLowerCase()).filter(word => word.length >= 2 && word.length <= 40))].slice(0, 300)
+              })
+            }
+          />
+        </Card>
       )}
 
       {settings && (

@@ -9,7 +9,7 @@ import type { Logger } from 'pino';
 import type { Settings } from '../settings.js';
 import type { BotSession } from '../whatsapp/session.js';
 
-export type CommandCategory = 'general' | 'ai' | 'download' | 'info' | 'media' | 'utility' | 'admin' | 'fun';
+export type CommandCategory = 'general' | 'ai' | 'download' | 'info' | 'media' | 'utility' | 'admin' | 'fun' | 'adult';
 
 export interface Command {
   name: string;

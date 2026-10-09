@@ -1,4 +1,5 @@
 import { config } from '../../config.js';
+import { DEVELOPER } from '../../developer.js';
 import { coverImage } from '../../features/branding.js';
 import { sendLinkCard, sendMenu, type LinkButton, type MenuOption } from '../../features/menus.js';
 import { bold, card, code, command, duration, fail, field, italic, note, quote } from '../../whatsapp/format.js';
@@ -18,6 +19,7 @@ const SECTIONS: { key: CommandCategory | 'owner'; icon: string; title: string; w
   { key: 'utility', icon: '🧰', title: 'Tools', words: ['tools', 'tool', 'utility'] },
   { key: 'admin', icon: '🛡️', title: 'Group admin', words: ['admin', 'group', 'groups'] },
   { key: 'fun', icon: '🎲', title: 'Fun', words: ['fun', 'games'] },
+  { key: 'adult', icon: '🔞', title: '18+', words: ['adult', '18', '18+', 'nsfw'] },
   { key: 'owner', icon: '👑', title: 'Owner', words: ['owner'] }
 ];
 
@@ -33,7 +35,9 @@ function signature(prefix: string, item: Listed): string {
 
 function visibleCommands(ctx: CommandContext): Listed[] {
   const disabled = new Set(ctx.settings.commands.disabled);
-  return listCommands().filter(item => !disabled.has(item.name) && (!item.ownerOnly || ctx.isOwner));
+  // The 18+ commands are listed only where they can run: switched on, and never in a group.
+  const adult = ctx.settings.adult.enabled && !ctx.isGroup;
+  return listCommands().filter(item => !disabled.has(item.name) && (!item.ownerOnly || ctx.isOwner) && (item.category !== 'adult' || adult));
 }
 
 function commandDetails(ctx: CommandContext, item: Listed): string {
@@ -197,15 +201,20 @@ export const generalCommands: Command[] = [
   {
     name: 'owner',
     category: 'general',
-    description: "Get the bot owner's contact.",
+    description: "Get the contact of the bot's owner.",
     cooldown: 10,
     async execute(ctx) {
+      // The owners named in the dashboard; without any, the linked account is the owner.
       const me = ctx.bot.me;
-      if (!me) return;
-      const number = userPart(me.jid);
-      const name = me.name?.trim() || 'Bot owner';
-      const vcard = ['BEGIN:VCARD', 'VERSION:3.0', `FN:${name}`, `TEL;type=CELL;waid=${number}:+${number}`, 'END:VCARD'].join('\n');
-      await ctx.reply({ contacts: { displayName: name, contacts: [{ vcard }] } });
+      const numbers = ctx.settings.general.ownerNumbers.length ? ctx.settings.general.ownerNumbers : me ? [userPart(me.jid)] : [];
+      if (numbers.length === 0) return;
+      const own = me ? userPart(me.jid) : '';
+      const botName = ctx.settings.branding.botName;
+      const contacts = numbers.map((number, index) => {
+        const name = number === own && me?.name?.trim() ? me.name.trim() : numbers.length > 1 ? `${botName} owner ${index + 1}` : `${botName} owner`;
+        return { name, vcard: ['BEGIN:VCARD', 'VERSION:3.0', `FN:${name}`, `ORG:${botName};`, `TEL;type=CELL;type=VOICE;waid=${number}:+${number}`, 'END:VCARD'].join('\n') };
+      });
+      await ctx.reply({ contacts: { displayName: contacts.length > 1 ? `${contacts.length} owners of ${botName}` : contacts[0].name, contacts: contacts.map(({ vcard }) => ({ vcard })) } });
     }
   },
   {
@@ -215,48 +224,33 @@ export const generalCommands: Command[] = [
     description: 'Who made this bot, and how to reach them.',
     cooldown: 10,
     async execute(ctx) {
-      const { botName, developerName, developerNumber, developerWebsite, developerLink } = ctx.settings.branding;
-      const name = developerName || 'The developer';
+      const { botName } = ctx.settings.branding;
+      const { name, number: developerNumber, website, github } = DEVELOPER;
       const bare = (url: string) => url.replace(/^https?:\/\/(www\.)?/i, '').replace(/\/$/, '');
-      // A bare domain such as "buddhika.dev" is a perfectly good way to write a website.
-      const address = (url: string) => (!url || /^https?:\/\//i.test(url) ? url : `https://${url}`);
-      const website = address(developerWebsite);
-      const profile = address(developerLink);
       const caption = [
         card('👨‍💻', 'Developer', [
           `🧑 ${field('Name', name)}`,
           `🤖 ${field('Bot', `${botName} v${config.version}`)}`,
-          developerNumber ? `📞 ${field('WhatsApp', `+${developerNumber}`)}` : '',
-          website ? `🌐 ${field('Website', bare(website))}` : '',
-          profile ? `💻 ${field(/github\.com/i.test(profile) ? 'GitHub' : 'Link', bare(profile))}` : '',
+          `📞 ${field('WhatsApp', `+${developerNumber}`)}`,
+          `🌐 ${field('Website', bare(website))}`,
+          `💻 ${field('GitHub', bare(github))}`,
           `⚙️ ${field('Built with', 'Node.js, TypeScript, Baileys')}`
         ]),
         '',
-        note(developerNumber ? 'Their contact card is below. Say hi!' : 'Questions, ideas or bugs? Use the links above.')
+        note('Their contact card is below. Say hi!')
       ].join('\n');
       const image = await coverImage();
-      const links: LinkButton[] = [];
-      if (developerNumber) links.push({ label: '📞 Contact', url: `https://wa.me/${developerNumber}` });
-      if (website) links.push({ label: '🌐 Portfolio', url: website });
-      if (profile) links.push({ label: /github\.com/i.test(profile) ? '💻 GitHub' : '🔗 More', url: profile });
+      const links: LinkButton[] = [
+        { label: '📞 Contact', url: `https://wa.me/${developerNumber}` },
+        { label: '🌐 Portfolio', url: website },
+        { label: '💻 GitHub', url: github }
+      ];
       // Link buttons when tappable menus are on, the plain card otherwise.
       if (!(await sendLinkCard(ctx.bot, ctx.jid, { text: caption, links, image, quoted: ctx.msg }))) {
         await ctx.reply(image ? { image, caption } : caption);
       }
-      if (developerNumber) {
-        const vcard = [
-          'BEGIN:VCARD',
-          'VERSION:3.0',
-          `FN:${name}`,
-          `ORG:${botName} developer;`,
-          `TEL;type=CELL;type=VOICE;waid=${developerNumber}:+${developerNumber}`,
-          developerLink ? `URL:${developerLink}` : '',
-          'END:VCARD'
-        ]
-          .filter(Boolean)
-          .join('\n');
-        await ctx.send({ contacts: { displayName: name, contacts: [{ vcard }] } });
-      }
+      const vcard = ['BEGIN:VCARD', 'VERSION:3.0', `FN:${name}`, `ORG:${botName} developer;`, `TEL;type=CELL;type=VOICE;waid=${developerNumber}:+${developerNumber}`, `URL:${website}`, 'END:VCARD'].join('\n');
+      await ctx.send({ contacts: { displayName: name, contacts: [{ vcard }] } });
     }
   },
   {

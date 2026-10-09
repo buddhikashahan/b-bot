@@ -15,7 +15,7 @@ A self-hosted WhatsApp bot with a web dashboard, built on [Baileys](https://gith
 - **AI assistant**: Google Gemini answers ordinary messages, with your own instructions, photo understanding and per-chat memory
 - **Reply-by-number menus**: the bot's own menu, search results, download format choices, and menus you design in the dashboard; optionally as tappable buttons
 - **Auto-replies**: keyword rules and an away message
-- **Group protection**: anti-link (whitelist, delete / warn / kick), warnings, welcome and farewell messages
+- **Group protection**: anti-link (whitelist, delete / warn / kick), a bad-language filter for English and Sinhala, warnings with a limit, welcome and farewell messages
 - **Scheduler and broadcasts**: one-off, recurring (cron) and multi-recipient messages that survive restarts
 - **Access control**: public or private mode, groups-only / private-only commands, blocked people, ignored groups
 - **Media downloads**: songs and videos from YouTube, Facebook, TikTok, Instagram, X, Pinterest, Threads, Snapchat, Reddit, SoundCloud, Vimeo, Dailymotion, Twitch, Bilibili and Likee, with thumbnail previews and a choice of quality (audio, MP3, small file, voice note, 360p to 1080p, or as a document)
@@ -23,7 +23,7 @@ A self-hosted WhatsApp bot with a web dashboard, built on [Baileys](https://gith
 - **Voice conversations**: the assistant listens to voice notes and answers with a voice note in the same language
 - **Text to speech and translation**: natural AI voices and AI translation with a Gemini key, basic free services without one
 - **Look-ups**: films and series, news, crypto prices, world clock, Wikipedia, dictionary, weather, translation, currency, link shortener, GitHub
-- **Commands and plugins**: 131 built-in chat commands with WhatsApp-formatted replies, plus drop-in plugin files
+- **Commands and plugins**: 137 built-in chat commands with WhatsApp-formatted replies, plus drop-in plugin files
 - **Your branding**: bot name, cover image on the menu, and a developer card with contact, website and profile link
 - **Dashboard**: works on phones, tablets and desktops; getting-started guide, quick switches, live activity feed, instant-save settings, built-in help, live logs
 - **Any database**: SQLite out of the box; PostgreSQL, MySQL or MongoDB by changing one URL
@@ -276,7 +276,9 @@ needed (the official release, verified against its published checksum) and by ff
 `npm install` through the optional `ffmpeg-static` package. Files are fetched to a temporary folder, sent,
 and deleted.
 
-- Limits (largest file, longest video, owners only, on/off) are on the **Commands** page. When a video
+- Limits (largest file, largest file as a document, longest video, owners only, on/off) are on the
+  **Commands** page. The document limit (200 MB by default) applies to the `doc` options, which ask for a
+  file, and to long videos sent as a file because they are too big to play in the chat. When a video
   is too big at the chosen quality the bot picks a lower one that fits. When a site refuses a stream
   ("403 Forbidden") the bot retries and then falls back to a plainer version of the same video.
 - Sites change often. If downloads start failing, press **Update downloader** on the Commands page or send
@@ -297,9 +299,10 @@ server with ffmpeg and sharp; files up to 40 MB are accepted.
 
 **Branding.** `.menu`, `.botinfo` and `.developer` are sent with the cover image. Put your own
 `cover.jpg` (or `.png` / `.webp`) in the data folder to replace the bundled one, or switch covers off on
-the **Menus** page. The bot's name and the developer card (name, website, profile link, and a WhatsApp number
-that is also shared as a contact card) are edited under **Settings > Branding and developer**; clear a
-field to leave it off the card.
+the **Menus** page. The bot's name is edited under **Settings > Branding**. `.developer` credits the bot's author
+and is not a setting: the details are fixed in `server/src/developer.ts`, and in groups the bot marks the
+author's messages with a 👨‍💻 reaction. `.owner` shares a contact card for each owner number set on the
+**Access** page, or for the linked account when none is set.
 
 **News.** `.news` lists the ten latest stories from [Helakuru Esana](https://www.helakuru.lk/esana) (through
 [esana-news-sdk](https://github.com/buddhikashahan/esana-news-sdk)) on the picture of the first one;
@@ -344,6 +347,27 @@ with a limit, or kick; a domain whitelist) and welcome / farewell texts with `{u
 `{desc}` and `{count}`. The bot must be a group admin to delete messages or remove members. Admins and
 owners are never filtered.
 
+**Bad-language filter.** Per group (the **Groups** page, or `.antibad on|off|delete|warn|kick` from an
+admin): messages with abusive language are deleted, in English and in Sinhala written in either script,
+including stretched ("fuuuck"), disguised ("sh1t") and spelled-out ("f.u.c.k") forms. The built-in list is
+short on purpose, insults only, so ordinary talk is not caught; add your own words under **Groups > Extra
+words**. With `warn`, each offence counts towards the group's warning limit (`.setwarn 3`), shared with
+link warnings and `.warn`; at the limit the member is removed and starts from zero. `.warnings` shows the
+counts and `.resetwarn @user` clears one.
+
+**18+ commands.** Off unless you switch them on (**Access > 18+ commands**, or `.adult on`). They are
+`.phsearch <words>` and `.phdl <link>` for Pornhub, they work only in private chats, never in groups, and
+only for people confirmed as adults; the AI assistant is never given them. Search results are text only
+and show each video's length and approximate size, and whether it will arrive as a document: a video too
+big to play in the chat is sent as a file, up to the document limit on the **Commands** page. A person is confirmed by an
+owner (`.adult allow <number>`, or the Access page) or by `.verify`: they send a photo of an ID card,
+passport or driving licence, Gemini reads the date of birth, and the bot does the arithmetic. The photo is
+not kept; only the number is remembered as verified. Be clear about what that check is worth: it reads a
+date from a picture and cannot tell whether the document is genuine or belongs to the sender, so it stops
+the honest and the careless, not the determined. Sharing adult material also breaks WhatsApp's terms and
+is against the law in some countries, Sri Lanka among them; switching this on is your decision and your
+risk.
+
 **Scheduler.** Jobs are rows in the database. A due message that cannot be sent because WhatsApp is
 offline waits and goes out when the connection returns. Failed recipients are retried with backoff, and
 delivery progress is recorded per recipient, so a retry (or a restart mid-broadcast) only reaches the
@@ -361,9 +385,10 @@ The default prefix is `.` (change it on the **Commands** page). Send `.menu` for
 | Search & info | `news`, `worldnews`, `imdb`, `crypto`, `time`, `wiki`, `define`, `weather`, `convert`, `shorten`, `github` |
 | Media | `sticker`, `circle`, `toimg`, `tomp3`, `tovn`, `togif`, `trim`, `bass`, `nightcore`, `slow`, `fast`, `deep`, `chipmunk`, `reverse`, `blur`, `grey`, `invert`, `vflip`, `mirror`, `rotate`, `enhance`, `meme` |
 | Tools | `tts`, `translate`, `remind <time> <text>`, `calc`, `qr`, `poll`, `pp`, `genpass` |
-| Group admin | `kick`, `add`, `promote`, `demote`, `warn`, `warnings`, `resetwarn`, `del`, `tagall`, `hidetag`, `admins`, `link`, `revoke`, `setname`, `setdesc`, `mute`, `unmute`, `lock`, `unlock`, `antilink`, `welcome`, `goodbye`, `groupinfo` |
+| Group admin | `kick`, `add`, `promote`, `demote`, `warn`, `warnings`, `resetwarn`, `del`, `tagall`, `hidetag`, `admins`, `link`, `revoke`, `setname`, `setdesc`, `mute`, `unmute`, `lock`, `unlock`, `antilink`, `antibad`, `setwarn`, `welcome`, `goodbye`, `groupinfo` |
 | Fun | `8ball`, `flip`, `roll`, `choose`, `rate`, `joke`, `fact`, `truth`, `dare`, `fancy` |
-| Owner | `mode`, `scope`, `block`, `unblock`, `blocklist`, `ignore`, `antidelete`, `viewonce`, `autostatus`, `anticall`, `autoread`, `autoreply`, `assistant`, `away`, `setprefix`, `vv`, `save`, `forward`, `newsalerts`, `dl`, `updatedl`, `leave` |
+| 18+ (off by default) | `verify`, `phsearch`, `phdl` |
+| Owner | `mode`, `scope`, `block`, `unblock`, `blocklist`, `ignore`, `antidelete`, `viewonce`, `autostatus`, `anticall`, `autoread`, `autoreply`, `assistant`, `away`, `setprefix`, `vv`, `save`, `forward`, `newsalerts`, `adult`, `dl`, `updatedl`, `leave` |
 
 `.menu` opens the numbered menu, `.menu all` shows everything in boxed sections, `.menu downloads` opens
 one category and `.menu song` explains one command. Replies use WhatsApp formatting throughout (bold labels, `inline code` for commands, quoted

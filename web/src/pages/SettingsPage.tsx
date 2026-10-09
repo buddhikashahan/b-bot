@@ -224,30 +224,16 @@ function BrandingCard() {
   if (!settings) return null;
   const { branding, commands } = settings;
   return (
-    <Card title="Branding and developer" description={`The bot's name, and what ${commands.prefix}developer shares.`}>
+    <Card title="Branding" description="The bot's name and cover image.">
       <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_220px]">
-        <div className="grid content-start gap-4 sm:grid-cols-2">
+        <div className="grid content-start gap-4">
           <Field label="Bot name" hint="Shown at the top of menus and info cards.">
             <CommitInput maxLength={30} value={branding.botName} onCommit={value => void (value.trim() && saveSettings('branding', { botName: value.trim() }))} />
           </Field>
-          <Field label="Developer name">
-            <CommitInput maxLength={60} value={branding.developerName} onCommit={value => void saveSettings('branding', { developerName: value.trim() })} />
-          </Field>
-          <Field label="Developer WhatsApp number" hint="Country code and number, digits only (e.g. 94771234567). Leave empty to share no number.">
-            <CommitInput
-              inputMode="numeric"
-              autoComplete="off"
-              placeholder="Not shared"
-              value={branding.developerNumber}
-              onCommit={value => void saveSettings('branding', { developerNumber: value.replace(/\D/g, '') })}
-            />
-          </Field>
-          <Field label="Developer website" hint="A portfolio or home page.">
-            <CommitInput maxLength={200} placeholder="Not shared" value={branding.developerWebsite} onCommit={value => void saveSettings('branding', { developerWebsite: value.trim() })} />
-          </Field>
-          <Field label="Developer profile link" hint="A GitHub profile or social page.">
-            <CommitInput maxLength={200} placeholder="Not shared" value={branding.developerLink} onCommit={value => void saveSettings('branding', { developerLink: value.trim() })} />
-          </Field>
+          <p className="text-sm text-muted">
+            <code className="font-mono">{commands.prefix}developer</code> credits the bot's author, Buddhika Shahan. <code className="font-mono">{commands.prefix}owner</code> shares the owner numbers set on the
+            Access page.
+          </p>
         </div>
         <figure className="min-w-0">
           <img src="/cover.jpg" alt="The bot's default cover image" className="aspect-square w-full rounded-lg border border-line object-cover" />

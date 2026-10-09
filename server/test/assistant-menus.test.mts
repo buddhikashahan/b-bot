@@ -15,6 +15,8 @@ interface Captured {
   body: any;
 }
 const calls: Captured[] = [];
+/** What the stand-in model reports reading on an identity document. */
+let ageReading = '{}';
 const server = http.createServer((req, res) => {
   let raw = '';
   req.on('data', chunk => (raw += chunk));
@@ -86,6 +88,10 @@ const server = http.createServer((req, res) => {
           }
         ]
       });
+    }
+    // The age check: the stand-in "reads" whatever the test says is on the document.
+    if (body.systemInstruction?.parts[0].text.includes('age gate')) {
+      return send(200, { candidates: [{ content: { parts: [{ text: ageReading }] }, finishReason: 'STOP' }] });
     }
     // A model that types out a note it saw in its own earlier replies instead of calling a function.
     if (text.includes('PARROT')) return send(200, { candidates: [{ content: { parts: [{ text: '[ran the command: yts lelena]' }] }, finishReason: 'STOP' }] });
@@ -559,6 +565,76 @@ const plain = await say('CALL:download_audio|{"query":"lelena"}');
 check('downloads: with the setting off the assistant only talks', !plain.calls[0]?.body.tools && plain.text.includes('*Echo:* CALL:download_audio') && plain.sent.length === 1, plain.text);
 await updateSettings({ ai: { enabled: toolsBefore.enabled, scope: toolsBefore.scope, downloads: true } });
 
+// ================= 18+ commands and the age gate =================
+const adultFeature = await src('features/adult.ts');
+const today = new Date('2026-10-09T00:00:00Z');
+const judged = (reading: object | string) => adultFeature.judgeAgeProof(typeof reading === 'string' ? reading : JSON.stringify(reading), today);
+check('age: full years, to the day', adultFeature.ageOn(new Date('2008-10-09T00:00:00Z'), today) === 18 && adultFeature.ageOn(new Date('2008-10-10T00:00:00Z'), today) === 17 && adultFeature.ageOn(new Date('1990-01-01T00:00:00Z'), today) === 36);
+check(
+  'age check: an adult by date of birth passes; the model\'s own opinion of the age is not asked for',
+  judged({ document: true, dateOfBirth: '1998-05-20', birthYear: 1998, legible: true }).adult === true && judged('Here you go:\n```json\n{"document": true, "dateOfBirth": "2008-10-09", "legible": true}\n```').adult === true
+);
+check('age check: a minor does not', judged({ document: true, dateOfBirth: '2008-10-10', legible: true }).reason === 'under-age' && judged({ document: true, dateOfBirth: '2012-01-01', legible: true }).reason === 'under-age');
+check('age check: with only a year, the latest birthday is assumed', judged({ document: true, dateOfBirth: null, birthYear: 2008, legible: true }).reason === 'under-age' && judged({ document: true, dateOfBirth: null, birthYear: 2007, legible: true }).adult === true);
+check(
+  'age check: not a document, unreadable, impossible or missing answers all fail',
+  judged({ document: false, dateOfBirth: '1990-01-01', legible: true }).reason === 'not-a-document' && judged({ document: true, dateOfBirth: null, birthYear: null, legible: true }).reason === 'unreadable' && judged({ document: true, dateOfBirth: '1990-01-01', legible: false }).reason === 'unreadable' && judged({ document: true, dateOfBirth: '1850-01-01', legible: true }).reason === 'unreadable' && judged('I cannot help with that.').reason === 'unreadable' && judged({ document: 'yes', dateOfBirth: '1990-01-01' }).reason === 'not-a-document'
+);
+check('adult links: only the adult sites, never a local address', Boolean(adultFeature.parseAdultUrl('https://www.pornhub.com/view_video.php?viewkey=abc123')) && !adultFeature.parseAdultUrl('https://www.youtube.com/watch?v=abc') && !adultFeature.parseAdultUrl('https://pornhub.com.evil.example/x') && !adultFeature.parseAdultUrl('http://127.0.0.1/pornhub.com'));
+
+const sizing = await src('features/downloader.ts');
+const megabytes = (bytes: number | undefined) => (bytes === undefined ? undefined : Math.round(bytes / 1024 / 1024));
+const streams = (extra: object[]) => [{ height: 240 }, { height: 480 }, { height: 720 }, { height: 1080 }, ...extra];
+check(
+  'sizes: from the bit rate the site reports for the chosen quality',
+  megabytes(sizing.estimateSize({ duration: 840, formats: streams([{ height: 480, tbr: 798.842, vcodec: 'avc1', acodec: 'mp4a' }, { height: 1080, tbr: 2250, vcodec: 'avc1', acodec: 'mp4a' }]) }, 480)) === 80 &&
+    megabytes(sizing.estimateSize({ duration: 600, formats: [{ height: 480, tbr: 800, vcodec: 'avc1', acodec: 'none' }] }, 480)) === 66
+);
+check(
+  'sizes: a stated size wins; with nothing reported, a typical bit rate for that height is used',
+  sizing.estimateSize({ duration: 600, formats: [{ height: 480, filesize: 12_345_678, tbr: 800 }] }, 480) === 12_345_678 && megabytes(sizing.estimateSize({ duration: 1508, formats: streams([]) }, 480)) === 162 && megabytes(sizing.estimateSize({ duration: 1508, formats: streams([]) }, 720)) === 306
+);
+check(
+  'sizes: no guess without a length or without any picture',
+  sizing.estimateSize({ formats: streams([]) }, 480) === undefined && sizing.estimateSize({ duration: 100, formats: [{ height: null, vcodec: 'none', tbr: 128 }] }, 480) === undefined && megabytes(sizing.estimateSize({ duration: 100, formats: [{ height: 1080 }] }, 480)) === 36
+);
+check('18+: off by default, and says so', (await say('.phsearch something')).text.includes('18+ features are switched off') && (await say('.verify')).text.includes('switched off'));
+check('18+: not in the menu while off', !(await say('.menu')).text.includes('18+'));
+await say('.adult on', { owner: true });
+check('18+: the owner switches it on from WhatsApp', getSettings().adult.enabled === true);
+const gated = await say('.phsearch something');
+check('18+: an unconfirmed person is sent to the age check, and nothing is searched', gated.text.includes('*Adults only*') && gated.text.includes('.verify') && gated.sent.length === 1, gated.text);
+const inGroup = await say('.phsearch something', { jid: GROUP });
+check('18+: never in a group, not even for the owner', inGroup.text.includes('Private chats only') && (await say('.phdl https://www.pornhub.com/view_video.php?viewkey=abc', { owner: true, jid: GROUP })).text.includes('Private chats only'), inGroup.text);
+check('18+: verifying in a group is refused, so no document is posted there', (await say('.verify', { jid: GROUP, image: true })).text.includes('Never post an identity document in a group'));
+const howTo = await say('.verify');
+check('18+: without a photo, the check explains itself and what happens to the photo', howTo.text.includes('*Age check*') && howTo.text.includes('not kept by this bot') && howTo.calls.length === 0, howTo.text);
+
+ageReading = JSON.stringify({ document: true, dateOfBirth: '2010-03-01', birthYear: 2010, legible: true });
+const minor = await say('.verify', { image: true, wait: 1200 });
+check('18+: a minor is turned away', minor.text.includes('*Not verified*') && minor.text.includes('18 and over') && getSettings().adult.verified.length === 0 && minor.calls[0]?.body.contents[0].parts.some((part: any) => part.inlineData), minor.text);
+check('18+: the document check is a one-off question: nothing about it is kept in the chat memory', (await prisma.aiMessage.count({ where: { chatJid: minor.from } })) === 0);
+ageReading = JSON.stringify({ document: false, dateOfBirth: null, birthYear: null, legible: false });
+check('18+: a picture that is not a document is turned away', (await say('.verify', { image: true, wait: 1200 })).text.includes('does not look like an identity card'));
+check('18+: the check cannot be worn down by trying again and again', adultFeature.takeAttempt('somebody') && adultFeature.takeAttempt('somebody') && adultFeature.takeAttempt('somebody') && !adultFeature.takeAttempt('somebody') && adultFeature.takeAttempt('somebody else'));
+ageReading = JSON.stringify({ document: true, dateOfBirth: '1995-03-01', birthYear: 1995, legible: true });
+const zara = newPerson();
+const adultOk = await say('.verify', { from: zara, image: true, wait: 1200 });
+check('18+: an adult is confirmed and remembered by number only', adultOk.text.includes('*Verified*') && getSettings().adult.verified.join() === zara.split('@')[0] && !JSON.stringify(getSettings().adult).includes('1995'), [adultOk.text, getSettings().adult]);
+check('18+: the section appears in the menu, in private chats only', (await say('.menu', { from: zara })).text.includes('🔞 18+') && !(await say('.menu', { jid: GROUP })).text.includes('18+'));
+check('18+: a confirmed adult gets through the gate', (await say('.phdl https://example.org/video', { from: zara })).text.includes('Send a Pornhub link') && (await say('.phsearch', { from: zara })).text.includes('phsearch <words>'));
+await updateSettings({ downloads: { enabled: false } });
+check('18+: the download switch applies here too', (await say('.phdl https://www.pornhub.com/view_video.php?viewkey=abc', { owner: true })).text.includes('Downloads are switched off'));
+await updateSettings({ downloads: { enabled: true } });
+await say(`.adult revoke ${zara.split('@')[0]}`, { owner: true });
+check('18+: the owner can remove someone', getSettings().adult.verified.length === 0 && !adultFeature.isVerifiedAdult(zara));
+await say('.adult allow 94771234567', { owner: true });
+check('18+: and approve by hand', getSettings().adult.verified.join() === '94771234567' && adultFeature.isVerifiedAdult('94771234567@s.whatsapp.net') && (await say('.adult list', { owner: true })).text.includes('+94771234567'));
+check('18+: only owners manage it', (await say('.adult off', { from: zara })).text.includes('Owner command') && getSettings().adult.enabled === true);
+const offeredAdult: string[] = await registry.commandsFor(fake, { key: { remoteJid: ME, id: 'X', fromMe: true }, message: { conversation: 'x' } });
+check('18+: the AI assistant is never given these commands, not even for the owner', offeredAdult.includes('song') && !offeredAdult.some(name => ['phsearch', 'phdl', 'verify', 'adult'].includes(name)), offeredAdult.filter(name => name.startsWith('ph')));
+await updateSettings({ adult: { enabled: false, verified: [] } });
+
 // ================= voice notes =================
 const aiBefore = { ...getSettings().ai };
 await updateSettings({ ai: { enabled: true, scope: 'private', voice: 'Puck' } });
@@ -704,13 +780,11 @@ const noPicture = await say('.menu');
 check('buttons: a picture that cannot be uploaded does not cost the menu', noPicture.sent.length === 0 && interactive() && !interactive().header && interactive().nativeFlowMessage.buttons[0].name === 'single_select');
 fake.uploadImage = upload;
 
-await updateSettings({ branding: { developerNumber: '94770000000', developerLink: 'https://github.com/buddhikashahan' } });
 relayed.length = 0;
 const devCard = await say('.developer');
 const devLinks = (interactive()?.nativeFlowMessage.buttons ?? []).map(params);
-check('buttons: the developer card gets contact, portfolio and GitHub buttons under its cover', devLinks.length === 3 && interactive().nativeFlowMessage.buttons.every((button: any) => button.name === 'cta_url') && devLinks[0].display_text === '📞 Contact' && devLinks[0].url === 'https://wa.me/94770000000' && devLinks[1].display_text === '🌐 Portfolio' && devLinks[1].url === 'https://buddhika.dev' && devLinks[2].display_text === '💻 GitHub' && interactive().header.hasMediaAttachment && interactive().body.text.includes('*Developer*'), devLinks);
-check('buttons: the developer contact card still follows', devCard.sent.length === 1 && devCard.sent[0].content.contacts?.contacts[0].vcard.includes('waid=94770000000'), devCard.sent.map(item => Object.keys(item.content)));
-await updateSettings({ branding: { developerNumber: '' } });
+check('buttons: the developer card gets contact, portfolio and GitHub buttons under its cover', devLinks.length === 3 && interactive().nativeFlowMessage.buttons.every((button: any) => button.name === 'cta_url') && devLinks[0].display_text === '📞 Contact' && devLinks[0].url === 'https://wa.me/94766866297' && devLinks[1].display_text === '🌐 Portfolio' && devLinks[1].url === 'https://buddhika.dev' && devLinks[2].display_text === '💻 GitHub' && interactive().header.hasMediaAttachment && interactive().body.text.includes('*Developer*'), devLinks);
+check('buttons: the developer contact card still follows', devCard.sent.length === 1 && devCard.sent[0].content.contacts?.contacts[0].vcard.includes('waid=94766866297'), devCard.sent.map(item => Object.keys(item.content)));
 
 const relay = fake.sock.relayMessage;
 fake.sock.relayMessage = async () => {
@@ -731,10 +805,6 @@ await updateSettings({ ai: { model: 'gemini-3.8-flash', fallbackModel: 'gemini-3
 await setInternal('settingsVersion', '1');
 await loadSettings();
 check('upgrade: the old default models move to the new pair', getSettings().ai.model === 'gemini-3.5-flash' && getSettings().ai.fallbackModel === 'gemini-3.1-flash-lite', getSettings().ai);
-check('upgrade: the developer card gets its contact number', getSettings().branding.developerNumber === '94766866297', getSettings().branding);
-await updateSettings({ branding: { developerNumber: '' } });
-await loadSettings();
-check('upgrade: a number removed afterwards stays removed', getSettings().branding.developerNumber === '');
 await updateSettings({ ai: { model: 'gemini-3.7-pro', fallbackModel: 'my-own-backup' } });
 await setInternal('settingsVersion', '1');
 await loadSettings();

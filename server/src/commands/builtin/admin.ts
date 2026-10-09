@@ -1,6 +1,7 @@
 import type { ParticipantAction } from '@whiskeysockets/baileys';
 import { prisma } from '../../db.js';
 import {
+  addWarning,
   getGroupSetting,
   parseWhitelist,
   saveGroupSetting,
@@ -121,6 +122,55 @@ export const adminCommands: Command[] = [
           ].join('\n')
         );
       }
+    }
+  },
+  {
+    name: 'antibad',
+    aliases: ['antibadwords', 'badwords', 'antitoxic'],
+    category: 'admin',
+    description: 'Remove abusive language (English and Sinhala) in this group, with warnings.',
+    usage: 'antibad on|off|delete|warn|kick',
+    adminOnly: true,
+    async execute(ctx) {
+      const option = ctx.args[0]?.toLowerCase();
+      const base = { name: ctx.group?.subject };
+      if (option === 'on' || option === 'off') {
+        await saveGroupSetting(ctx.bot.id, ctx.jid, { ...base, antiBadWords: option === 'on' });
+        const note = option === 'on' && !ctx.isBotAdmin ? '\n⚠️ Make me an admin so I can delete messages.' : '';
+        await ctx.reply(`🧼 The bad-language filter is now *${option}*.${note}`);
+      } else if (option === 'delete' || option === 'warn' || option === 'kick') {
+        await saveGroupSetting(ctx.bot.id, ctx.jid, { ...base, antiBadWords: true, badWordAction: option });
+        await ctx.reply(`🧼 The bad-language filter is on, action: *${option}*.`);
+      } else {
+        const setting = await getGroupSetting(ctx.bot.id, ctx.jid);
+        await ctx.reply(
+          [
+            `🧼 Bad-language filter: *${setting?.antiBadWords ? 'on' : 'off'}*`,
+            `Action: ${setting?.badWordAction ?? 'warn'} (removed after ${setting?.warnLimit ?? 3} warnings)`,
+            'Admins and bot owners are never filtered.',
+            '',
+            `${ctx.prefix}antibad on|off|delete|warn|kick`
+          ].join('\n')
+        );
+      }
+    }
+  },
+  {
+    name: 'setwarn',
+    aliases: ['warnlimit'],
+    category: 'admin',
+    description: 'Set how many warnings a member gets in this group before being removed.',
+    usage: 'setwarn <1-20>',
+    adminOnly: true,
+    async execute(ctx) {
+      const limit = Number(ctx.args[0]);
+      if (!Number.isInteger(limit) || limit < 1 || limit > 20) {
+        const current = (await getGroupSetting(ctx.bot.id, ctx.jid))?.warnLimit ?? 3;
+        await ctx.reply(`Members are removed after *${current}* warnings.\n${ctx.prefix}setwarn <1-20> changes that.`);
+        return;
+      }
+      await saveGroupSetting(ctx.bot.id, ctx.jid, { name: ctx.group?.subject, warnLimit: limit });
+      await ctx.reply(`⚠️ Members are now removed after *${limit}* warning${limit === 1 ? '' : 's'}.`);
     }
   },
   messageToggle('welcome', 'welcome', 'welcomeEnabled', 'welcomeTemplate'),
@@ -338,16 +388,10 @@ export const adminCommands: Command[] = [
         return;
       }
       const limit = (await getGroupSetting(ctx.bot.id, ctx.jid))?.warnLimit ?? 3;
-      const where = { sessionId_groupJid_userJid: { sessionId: ctx.bot.id, groupJid: ctx.jid, userJid: target } };
-      const { count } = await prisma.groupWarning.upsert({
-        where,
-        create: { ...where.sessionId_groupJid_userJid, count: 1 },
-        update: { count: { increment: 1 } }
-      });
+      const { count, reachedLimit } = await addWarning(ctx.bot.id, ctx.jid, target, limit);
       const reason = ctx.text.replace(/@\d+/g, '').trim();
       const tag = `@${userPart(target)}`;
-      if (count >= limit && ctx.isBotAdmin) {
-        await prisma.groupWarning.delete({ where });
+      if (reachedLimit && ctx.isBotAdmin) {
         await ctx.sock.groupParticipantsUpdate(ctx.jid, [target], 'remove');
         ctx.bot.invalidateGroup(ctx.jid);
         await ctx.send({ text: `🚫 ${tag} reached ${limit}/${limit} warnings and was removed.`, mentions: [target] });

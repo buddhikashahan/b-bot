@@ -226,21 +226,101 @@ await run('.developer', '94700000031@s.whatsapp.net');
 const dev = sent[0]?.content.caption as string | undefined;
 check('.developer: details card with the cover image, number, website and GitHub', dev?.includes('*Developer*') && dev.includes('*Name:* Buddhika Shahan') && dev.includes('*WhatsApp:* +94766866297') && dev.includes('*Website:* buddhika.dev') && dev.includes('*GitHub:* github.com/buddhikashahan') && Buffer.isBuffer(sent[0]?.content.image), dev);
 check('.developer: the contact card follows', sent.length === 2 && sent[1].content.contacts?.contacts[0].vcard.includes('waid=94766866297:+94766866297'), sent.map(item => Object.keys(item.content)));
-await updateSettings({ branding: { developerNumber: '', developerWebsite: 'example.org/me/' } });
-const noNumber = await run('.developer', '94700000034@s.whatsapp.net');
-check('.developer: no number, no contact card; a bare domain is fine as a website', sent.length === 1 && !noNumber?.includes('WhatsApp') && noNumber?.includes('*Website:* example.org/me'), noNumber);
-await updateSettings({ branding: { botName: 'Nova', developerNumber: '94770000000', developerWebsite: 'https://buddhika.dev', coverOnMenu: false } });
-const devCard = await run('.dev', '94700000032@s.whatsapp.net');
-check('.developer: uses the number and bot name from the settings', sent[0]?.content.text?.includes('+94770000000') && sent[0].content.text.includes('Nova v') && devCard === undefined && sent[1]?.content.contacts?.contacts[0].vcard.includes('waid=94770000000:+94770000000'), sent.map(item => item.content));
+let editable = true;
+await updateSettings({ branding: { developerNumber: '94770000000', developerName: 'Somebody Else' } as never });
+await run('.developer', '94700000034@s.whatsapp.net');
+editable = !sent[0]?.content.caption?.includes('Buddhika Shahan') || !sent[0].content.caption.includes('+94766866297') || 'developerNumber' in getSettings().branding;
+check('.developer: the credit is fixed; settings cannot change it', !editable, { caption: sent[0]?.content.caption, branding: getSettings().branding });
+await updateSettings({ branding: { botName: 'Nova', coverOnMenu: false } });
+await run('.dev', '94700000032@s.whatsapp.net');
+check('.developer: uses the bot name from the settings', sent[0]?.content.text?.includes('Nova v') && sent[0].content.text.includes('Buddhika Shahan'), sent.map(item => item.content));
 check('branding: the bot name is used on the menu, without a cover when switched off', (await run('.menu', '94700000033@s.whatsapp.net'))?.includes('🤖 *Nova*') && !sent[0].content.image);
-await updateSettings({ branding: { botName: 'B-Bot', developerNumber: '94766866297', coverOnMenu: true } });
-let badNumber = false;
-try {
-  await updateSettings({ branding: { developerNumber: 'call me' } });
-} catch {
-  badNumber = true;
-}
-check('branding: a developer number must be digits', badNumber);
+await updateSettings({ branding: { botName: 'B-Bot', coverOnMenu: true } });
+
+// .owner shares the owners named in the dashboard; with none, the linked account.
+await run('.owner', '94700000035@s.whatsapp.net');
+check('.owner: without owner numbers, the linked account', sent[0]?.content.contacts?.contacts.length === 1 && sent[0].content.contacts.contacts[0].vcard.includes(`waid=${ME.split('@')[0]}:`), sent[0]?.content);
+await updateSettings({ general: { ownerNumbers: ['94766866297', '94771112223'] } });
+await run('.owner', '94700000036@s.whatsapp.net');
+const ownerCards = sent[0]?.content.contacts;
+check('.owner: the owner numbers set in the dashboard, one contact each', ownerCards?.contacts.length === 2 && ownerCards.contacts[0].vcard.includes('waid=94766866297:+94766866297') && ownerCards.contacts[1].vcard.includes('waid=94771112223:') && ownerCards.displayName === '2 owners of B-Bot' && !JSON.stringify(ownerCards).includes(ME.split('@')[0]), ownerCards);
+await updateSettings({ general: { ownerNumbers: [] } });
+
+// The bot marks its developer's messages in groups.
+const DEVELOPER = '94766866297@s.whatsapp.net';
+reset();
+await upsert({ ...textMsg(`D${++n}`, GROUP, 'hello everyone', DEVELOPER), pushName: 'Buddhika' });
+check('developer: a message of theirs in a group gets the reaction', sent.length === 1 && sent[0].jid === GROUP && sent[0].content.react?.text === '👨‍💻' && sent[0].content.react.key.participant === DEVELOPER, sent.map(item => item.content));
+reset();
+await upsert(textMsg(`D${++n}`, GROUP, 'hello everyone', BOB));
+await upsert({ ...textMsg(`D${++n}`, DEVELOPER, 'hello bot'), pushName: 'Buddhika' });
+await upsert({ key: { remoteJid: GROUP, id: `D${++n}`, fromMe: false, participant: DEVELOPER }, message: { reactionMessage: { key: { remoteJid: GROUP, id: 'X', fromMe: false }, text: '👍' } }, messageTimestamp: now(), pushName: 'Buddhika' });
+check('developer: nobody else, not in private chats, and not for their reactions', !sent.some(item => item.content.react), sent.map(item => item.content));
+const realPnForLid = fake.pnForLid;
+fake.pnForLid = async (lid: string) => (lid === '555000111222333@lid' ? DEVELOPER : undefined);
+reset();
+await upsert({ ...textMsg(`D${++n}`, GROUP, 'under a hidden id', '555000111222333@lid'), pushName: 'Buddhika' });
+check('developer: also when WhatsApp hides their number in the group', sent.some(item => item.content.react?.text === '👨‍💻'), sent.map(item => item.content));
+fake.pnForLid = realPnForLid;
+
+// --- bad language -----------------------------------------------------------------------------------
+const { findBadWord } = await src('features/bad-words.ts');
+const guard = await src('features/group-guard.ts');
+check(
+  'bad words: English, also stretched, disguised or spelled out',
+  ['what the fuck', 'FUUUUCK off', 'you b!tch', 'sh1t happens', 'f.u.c.k you', 'f u c k', 'motherfucker!!', 'stop being a d1ckhead'].every(text => findBadWord(text)),
+  ['what the fuck', 'FUUUUCK off', 'you b!tch', 'sh1t happens', 'f.u.c.k you', 'f u c k', 'motherfucker!!', 'stop being a d1ckhead'].filter(text => !findBadWord(text))
+);
+check('bad words: Sinhala, in Sinhala letters with endings and in English letters', ['උඹ හුත්තෙක්', 'පකයාට කියපන්', 'ado huththo', 'pakaya wage', 'wesige putha', 'kariyek wage keriya'].every(text => findBadWord(text)), ['උඹ හුත්තෙක්', 'පකයාට කියපන්', 'ado huththo', 'pakaya wage', 'wesige putha', 'kariyek wage keriya'].filter(text => !findBadWord(text)));
+check(
+  'bad words: ordinary talk is left alone',
+  ['good morning class', 'I assess the passage', 'a trip to Niger and Scunthorpe', 'the cockpit and the peacock', 'shitake mushrooms', 'ආයුබෝවන් කොහොමද', 'කැරිබියන් දූපත්', 'mama gedara yanawa', 'as I was saying', 'pass the dictionary'].every(text => !findBadWord(text)),
+  ['good morning class', 'I assess the passage', 'a trip to Niger and Scunthorpe', 'the cockpit and the peacock', 'shitake mushrooms', 'ආයුබෝවන් කොහොමද', 'කැරිබියන් දූපත්', 'mama gedara yanawa', 'as I was saying', 'pass the dictionary'].map(text => [text, findBadWord(text)]).filter(([, word]) => word)
+);
+check('bad words: the owner can add words', !findBadWord('you absolute muppet') && findBadWord('you absolute muppet', ['Muppet']) === 'muppet' && Boolean(findBadWord('මෝඩයා වගේ', ['මෝඩයා'])));
+
+const deletions = () => sockCalls.filter(call => call[0] === 'sendMessage' && call[2]?.delete).length;
+const removals = () => sockCalls.filter(call => call[0] === 'groupParticipantsUpdate' && call[3] === 'remove');
+reset();
+await upsert(textMsg(`W${++n}`, GROUP, 'what the fuck is this', BOB));
+check('bad language: nothing happens while the filter is off', deletions() === 0 && sent.length === 0, sent);
+await guard.saveGroupSetting('default', GROUP, { antiBadWords: true, badWordAction: 'warn', warnLimit: 3 });
+reset();
+await upsert(textMsg(`W${++n}`, GROUP, 'what the fuck is this', BOB));
+check('bad language: the message is deleted and its sender warned', deletions() === 1 && sent.length === 1 && sent[0].content.text.includes('Warning 1/3') && sent[0].content.mentions[0] === BOB && !sent[0].content.text.includes('fuck'), sent.map(item => item.content));
+reset();
+await upsert(textMsg(`W${++n}`, GROUP, 'ado huththo', BOB));
+check('bad language: Sinhala counts on the same warnings', deletions() === 1 && sent[0]?.content.text.includes('Warning 2/3'), sent.map(item => item.content));
+reset();
+await upsert(textMsg(`W${++n}`, GROUP, 'good morning all', BOB));
+await upsert(textMsg(`W${++n}`, GROUP, 'this is shit', ADMIN));
+check('bad language: clean messages and admins are left alone', deletions() === 0 && sent.length === 0, sent.map(item => item.content));
+reset();
+await upsert(textMsg(`W${++n}`, GROUP, 'bullshit', BOB));
+check('bad language: at the limit the member is removed and starts from zero', deletions() === 1 && removals().length === 1 && removals()[0][2][0] === BOB && sent[0].content.text.includes('3/3 warnings') && (await prisma.groupWarning.count({ where: { groupJid: GROUP, userJid: BOB } })) === 0, sent.map(item => item.content));
+await guard.saveGroupSetting('default', GROUP, { badWordAction: 'delete' });
+reset();
+await upsert(textMsg(`W${++n}`, GROUP, 'bitch', ALICE));
+check('bad language: "delete" only removes the message', deletions() === 1 && removals().length === 0 && sent[0].content.text.includes('not allowed in this group') && (await prisma.groupWarning.count({ where: { groupJid: GROUP, userJid: ALICE } })) === 0);
+await updateSettings({ moderation: { badWords: ['muppet'] } });
+reset();
+await upsert(textMsg(`W${++n}`, GROUP, 'you muppet', ALICE));
+check('bad language: words added in the dashboard are removed too', deletions() === 1);
+await updateSettings({ moderation: { badWords: [] } });
+
+reset();
+await upsert(textMsg(`W${++n}`, GROUP, '.antibad kick', ADMIN), 450);
+check('.antibad: admins choose what happens', (await guard.getGroupSetting('default', GROUP))?.badWordAction === 'kick' && sent.at(-1)?.content.text.includes('action: *kick*'), sent.map(item => item.content));
+reset();
+await upsert(textMsg(`W${++n}`, GROUP, '.setwarn 5', ADMIN), 450);
+check('.setwarn: admins set the number of warnings', (await guard.getGroupSetting('default', GROUP))?.warnLimit === 5 && sent.at(-1)?.content.text.includes('*5* warnings'));
+reset();
+await upsert(textMsg(`W${++n}`, GROUP, '.antibad off', ALICE), 450);
+check('.antibad: members cannot switch it off', (await guard.getGroupSetting('default', GROUP))?.antiBadWords === true && sent.at(-1)?.content.text.includes('Admin command'), sent.map(item => item.content));
+reset();
+await upsert(textMsg(`W${++n}`, GROUP, '.antibad off', ADMIN), 450);
+check('.antibad: off', (await guard.getGroupSetting('default', GROUP))?.antiBadWords === false);
+await guard.saveGroupSetting('default', GROUP, { warnLimit: 3 });
 reset();
 await upsert(textMsg('P1', GROUP, '.poll Lunch? | Pizza | Rice', ALICE), 450);
 check('.poll creates a poll', sent.at(-1)?.content.poll?.name === 'Lunch?' && sent.at(-1)?.content.poll.values.length === 2, sent.at(-1));

@@ -103,6 +103,8 @@ model GroupSetting {
   antiLinkMode     String   @default("whatsapp")
   antiLinkAction   String   @default("delete")
   warnLimit        Int      @default(3)
+  antiBadWords     Boolean  @default(false)
+  badWordAction    String   @default("warn")
   whitelist        String   __TEXT__
   welcomeEnabled   Boolean  @default(false)
   welcomeTemplate  String?  __TEXT__

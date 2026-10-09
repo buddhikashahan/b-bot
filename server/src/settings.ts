@@ -13,8 +13,6 @@ export const DEFAULT_AI_MODEL = 'gemini-3.5-flash';
 /** Google offers no plain "3.1 Flash" for chat; the lite variant is the 3.1 Flash model that exists. */
 export const DEFAULT_AI_BACKUP_MODEL = 'gemini-3.1-flash-lite';
 export const DEFAULT_AWAY_MESSAGE = "👋 I'm away right now and will reply as soon as I can.";
-/** B-Bot's developer, shown by the developer command. */
-const DEVELOPER_NUMBER = '94766866297';
 
 const PhoneNumber = z.string().regex(/^\d{6,16}$/);
 /** Any chat: a person, a group or a channel. */
@@ -50,14 +48,7 @@ export const SettingsSchema = z.object({
       /** Name shown in menus and info cards. */
       botName: z.string().trim().min(1).max(30).default('B-Bot'),
       /** Send the cover image with the main menu and the info cards. */
-      coverOnMenu: z.boolean().default(true),
-      developerName: z.string().trim().max(60).default('Buddhika Shahan'),
-      /** WhatsApp number shared by the developer command (digits only, with country code). Empty shares no number. */
-      developerNumber: z.union([PhoneNumber, z.literal('')]).default(DEVELOPER_NUMBER),
-      /** Portfolio or home page. */
-      developerWebsite: z.string().trim().max(200).default('https://buddhika.dev'),
-      /** Source code or profile link. */
-      developerLink: z.string().trim().max(200).default('https://github.com/buddhikashahan')
+      coverOnMenu: z.boolean().default(true)
     })
     .prefault({}),
   menus: z
@@ -213,7 +204,26 @@ export const SettingsSchema = z.object({
       /** Restrict them to owners; downloads use bandwidth and disk on this machine. */
       ownerOnly: z.boolean().default(false),
       maxSizeMb: z.number().int().min(5).max(500).default(60),
+      /**
+       * Largest file sent as a document, for commands that hand over big files that way
+       * (the "doc" options, and long videos that would not fit as a playable one).
+       */
+      maxDocumentMb: z.number().int().min(5).max(2000).default(200),
       maxMinutes: z.number().int().min(1).max(240).default(30)
+    })
+    .prefault({}),
+  adult: z
+    .object({
+      /** 18+ commands. Off unless the owner switches them on; private chats only, confirmed adults only. */
+      enabled: z.boolean().default(false),
+      /** People confirmed as adults, by the document check or by an owner: their numbers, digits only. */
+      verified: z.array(PhoneNumber).max(1000).default([])
+    })
+    .prefault({}),
+  moderation: z
+    .object({
+      /** Words the bad-language filter removes in addition to its own list (per-group switch: Groups page). */
+      badWords: z.array(z.string().trim().min(2).max(40)).max(300).default([])
     })
     .prefault({}),
   groups: z
@@ -294,10 +304,6 @@ async function migrate(): Promise<void> {
       await updateSettings({ ai: patch });
       log.info(`AI models updated to ${current.ai.model} with ${current.ai.fallbackModel} as backup`);
     }
-  }
-  if (version < 3 && current.branding.developerNumber === '' && current.branding.developerName === 'Buddhika Shahan') {
-    // 1.2: the developer card carries a contact number. Before, the field started out empty.
-    await updateSettings({ branding: { developerNumber: DEVELOPER_NUMBER } });
   }
   await setInternal(VERSION_KEY, String(SETTINGS_VERSION));
 }

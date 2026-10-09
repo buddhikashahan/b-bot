@@ -13,7 +13,8 @@ const CATEGORIES: [CommandInfo['category'], string][] = [
   ['media', 'Media'],
   ['utility', 'Tools'],
   ['admin', 'Group admin'],
-  ['fun', 'Fun']
+  ['fun', 'Fun'],
+  ['adult', '18+']
 ];
 
 /** Clamp a typed number into the range the server accepts. */
@@ -66,9 +67,12 @@ function DownloadsCard() {
         onChange={ownerOnly => saveSettings('downloads', { ownerOnly })}
         disabled={!downloads.enabled}
       />
-      <div className="mt-2 grid gap-4 border-t border-line pt-4 md:grid-cols-2">
-        <Field label="Largest file (MB)" hint="5 to 500. Bigger files are refused.">
+      <div className="mt-2 grid gap-4 border-t border-line pt-4 md:grid-cols-3">
+        <Field label="Largest file (MB)" hint="5 to 500. A video that would be bigger is fetched in a lower quality.">
           <CommitInput type="number" min={5} max={500} value={downloads.maxSizeMb} onCommit={value => saveSettings('downloads', { maxSizeMb: bounded(value, 5, 500) })} />
+        </Field>
+        <Field label="Largest file as a document (MB)" hint='5 to 2000. For the "doc" options and long videos, which arrive as a file when they are too big to play in the chat.'>
+          <CommitInput type="number" min={5} max={2000} value={downloads.maxDocumentMb} onCommit={value => saveSettings('downloads', { maxDocumentMb: bounded(value, 5, 2000) })} />
         </Field>
         <Field label="Longest video or song (minutes)" hint="1 to 240. Live streams are always refused.">
           <CommitInput type="number" min={1} max={240} value={downloads.maxMinutes} onCommit={value => saveSettings('downloads', { maxMinutes: bounded(value, 1, 240) })} />

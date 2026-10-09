@@ -1,7 +1,7 @@
 import { Globe, Lock, MessageCircle, Plus, Users } from 'lucide-react';
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { ChatSearch } from '../components/shared';
-import { Button, Card, Chips, Input, PageHeader, SaveIndicator, Segmented, Spinner } from '../components/ui';
+import { Button, Card, Chips, Input, PageHeader, SaveIndicator, Segmented, Spinner, Toggle } from '../components/ui';
 import { api } from '../lib/api';
 import { useLive } from '../lib/live';
 import type { ChatScope, TargetList } from '../lib/types';
@@ -61,11 +61,12 @@ export function AccessPage() {
     );
   }
 
-  const { commands, general, access } = settings;
+  const { commands, general, access, adult } = settings;
   const personLabel = (phone: string) => (contactNames.has(phone) ? `${contactNames.get(phone)} (+${phone})` : `+${phone}`);
   const contactItems = targets.contacts.map(contact => ({ jid: contact.jid, name: contact.name, detail: `+${contact.jid.split('@')[0]}` }));
 
   const addOwner = (phone: string) => !general.ownerNumbers.includes(phone) && saveSettings('general', { ownerNumbers: [...general.ownerNumbers, phone] });
+  const approveAdult = (phone: string) => !adult.verified.includes(phone) && saveSettings('adult', { verified: [...adult.verified, phone] });
   const blockUser = (phone: string) => !access.blockedUsers.includes(phone) && saveSettings('access', { blockedUsers: [...access.blockedUsers, phone] });
   const blockGroup = (jid: string) => !access.blockedChats.includes(jid) && saveSettings('access', { blockedChats: [...access.blockedChats, jid] });
 
@@ -117,6 +118,38 @@ export function AccessPage() {
               <AddNumber label="Owner phone number" onAdd={addOwner} />
             </div>
           </div>
+        </Card>
+
+        <Card
+          title="18+ commands"
+          description={`Adult search and downloads (${commands.prefix}phsearch, ${commands.prefix}phdl). They work only in private chats, never in groups, and only for people confirmed as adults.`}
+        >
+          <Toggle
+            label="Allow 18+ commands"
+            description={`From WhatsApp: ${commands.prefix}adult on and ${commands.prefix}adult off. Sharing adult material breaks WhatsApp's terms and is against the law in some countries, Sri Lanka among them: this is your decision and your risk.`}
+            checked={adult.enabled}
+            onChange={enabled => saveSettings('adult', { enabled })}
+          />
+          {adult.enabled && (
+            <div className="mt-2 space-y-4 border-t border-line pt-4">
+              <div>
+                <p className="mb-2 text-sm font-medium">Confirmed adults</p>
+                <Chips
+                  empty="Nobody yet. Owners are always allowed."
+                  items={adult.verified.map(phone => ({ key: phone, label: personLabel(phone) }))}
+                  onRemove={phone => saveSettings('adult', { verified: adult.verified.filter(item => item !== phone) })}
+                />
+              </div>
+              <div className="grid gap-3 md:grid-cols-2">
+                <ChatSearch items={contactItems} exclude={adult.verified.map(phone => `${phone}@s.whatsapp.net`)} placeholder="Search your contacts" onPick={jid => approveAdult(jid.split('@')[0])} />
+                <AddNumber label="Number to approve" onAdd={approveAdult} />
+              </div>
+              <p className="text-xs text-muted">
+                People can also confirm their own age with <code className="font-mono">{commands.prefix}verify</code>: they send a photo of an ID card, passport or driving licence, the AI reads the date of birth, and
+                the photo is not kept. That check reads a date; it cannot tell whether the document is genuine or belongs to the sender, so add people you know here yourself when it matters.
+              </p>
+            </div>
+          )}
         </Card>
 
         <Card

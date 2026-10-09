@@ -19,10 +19,11 @@ import { handleAssistant } from '../features/ai.js';
 import { handleAwayMessage, handleKeywordReply } from '../features/auto-reply.js';
 import { handleCalls } from '../features/calls.js';
 import { saveContacts, touchContact } from '../features/directory.js';
-import { handleAntiLink, handleParticipantsUpdate } from '../features/group-guard.js';
+import { handleAntiLink, handleBadWords, handleParticipantsUpdate } from '../features/group-guard.js';
 import { handleMenuTrigger, resolveMenuReply, sendCustomMenuById } from '../features/menus.js';
 import { handleStatus } from '../features/status.js';
 import { handleViewOnce, handleViewOnceReply, handleWithheldViewOnce } from '../features/view-once.js';
+import { DEVELOPER, DEVELOPER_JID } from '../developer.js';
 import { getSettings } from '../settings.js';
 import { contentOf, kindOf, senderIdsOf } from './message-utils.js';
 import type { BotSession } from './session.js';
@@ -73,8 +74,9 @@ async function handleMessage(bot: BotSession, msg: WAMessage, live: boolean): Pr
   await step('view-once reply', () => handleViewOnceReply(bot, msg));
   await step('anti-delete cache', () => cacheMessage(bot, msg));
   if (isJidGroup(jid)) {
-    const removed = await step('anti-link', () => handleAntiLink(bot, msg));
+    const removed = (await step('anti-link', () => handleAntiLink(bot, msg))) || (await step('bad language', () => handleBadWords(bot, msg)));
     if (removed) return;
+    await step('developer reaction', () => greetDeveloper(bot, msg));
   }
 
   // Blocked people are still monitored (anti-delete, view-once) but never answered.
@@ -110,6 +112,16 @@ async function handleMessage(bot: BotSession, msg: WAMessage, live: boolean): Pr
   if (kindOf(contentOf(msg.message)) === 'other') return;
   if (await step('assistant', () => handleAssistant(bot, msg))) return;
   await step('away message', () => handleAwayMessage(bot, msg));
+}
+
+/** In groups, the bot marks what its developer writes with a reaction. */
+async function greetDeveloper(bot: BotSession, msg: WAMessage): Promise<void> {
+  const jid = msg.key.remoteJid;
+  // Not for the bot's own messages, and not for things nobody reads (reactions, receipts).
+  if (!jid || msg.key.fromMe || kindOf(contentOf(msg.message)) === 'other') return;
+  let fromDeveloper = false;
+  for (const id of senderIdsOf(msg)) fromDeveloper ||= id === DEVELOPER_JID || (id.endsWith('@lid') && (await bot.pnForLid(id)) === DEVELOPER_JID);
+  if (fromDeveloper) await bot.send(jid, { react: { text: DEVELOPER.reaction, key: msg.key } });
 }
 
 /**

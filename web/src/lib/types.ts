@@ -92,10 +92,12 @@ export interface Settings {
     voice: string;
     historyMessages: number;
   };
-  downloads: { enabled: boolean; ownerOnly: boolean; maxSizeMb: number; maxMinutes: number };
+  downloads: { enabled: boolean; ownerOnly: boolean; maxSizeMb: number; maxDocumentMb: number; maxMinutes: number };
   groups: { defaultWelcome: string; defaultFarewell: string };
   broadcast: { minDelayMs: number; maxDelayMs: number };
-  branding: { botName: string; coverOnMenu: boolean; developerName: string; developerNumber: string; developerWebsite: string; developerLink: string };
+  branding: { botName: string; coverOnMenu: boolean };
+  adult: { enabled: boolean; verified: string[] };
+  moderation: { badWords: string[] };
   menus: { buttons: boolean };
 }
 
@@ -161,6 +163,8 @@ export interface GroupConfig {
   antiLinkMode: 'whatsapp' | 'all';
   antiLinkAction: 'delete' | 'warn' | 'kick';
   warnLimit: number;
+  antiBadWords: boolean;
+  badWordAction: 'delete' | 'warn' | 'kick';
   whitelist: string[];
   welcomeEnabled: boolean;
   welcomeTemplate: string;
@@ -214,7 +218,7 @@ export interface Upload {
 export interface CommandInfo {
   name: string;
   aliases?: string[];
-  category: 'general' | 'ai' | 'download' | 'info' | 'media' | 'utility' | 'admin' | 'fun';
+  category: 'general' | 'ai' | 'download' | 'info' | 'media' | 'utility' | 'admin' | 'fun' | 'adult';
   description: string;
   usage?: string;
   ownerOnly?: boolean;
