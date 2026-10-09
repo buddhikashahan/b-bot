@@ -327,6 +327,10 @@ export async function downloadMedia(url: string, kind: MediaKind, limits: Downlo
       '--no-mtime',
       '--retries',
       '2',
+      // Many sites serve a video as hundreds of small pieces. One at a time, a long video takes
+      // many minutes; several at once is several times quicker.
+      '--concurrent-fragments',
+      '8',
       '--max-filesize',
       `${limits.maxSizeMb}M`,
       '--match-filter',

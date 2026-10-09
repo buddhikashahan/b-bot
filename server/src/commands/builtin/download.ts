@@ -90,15 +90,24 @@ export async function attempt<T>(ctx: CommandContext, title: string, work: () =>
   }
 }
 
+/** A download still running after this long gets a "still working" note, so it does not look stuck. */
+const PATIENCE_MS = 25_000;
+/** Longest wait for WhatsApp to take a file: two minutes, plus two seconds for every megabyte. */
+const sendTimeoutMs = (bytes: number) => 120_000 + (bytes / (1024 * 1024)) * 2000;
+
 /** Download `url` and deliver it to the chat, with reactions as a progress indicator. */
 export async function deliver(ctx: CommandContext, url: string, delivery: Delivery, icon: string, heading: string): Promise<void> {
   const { maxSizeMb, maxDocumentMb, maxMinutes } = ctx.settings.downloads;
   // What goes out as a file may be bigger than what goes out as playable media.
   const limit = delivery.asDocument || delivery.largeAsDocument ? Math.max(maxSizeMb, maxDocumentMb) : maxSizeMb;
   await ctx.react('⏳');
+  // A long video can take minutes. Say so once, or the reaction alone looks like nothing is happening.
+  const patience = setTimeout(() => {
+    void ctx.reply(`⏳ ${bold('Still downloading')}\n${quote('Long videos take a few minutes. I will send it as soon as it is here.')}`).catch(() => {});
+  }, PATIENCE_MS);
   const media = await attempt(ctx, 'Download failed', () =>
     downloadMedia(url, delivery.kind, { maxSizeMb: limit, maxMinutes }, { audio: delivery.audio, maxHeight: delivery.maxHeight })
-  );
+  ).finally(() => clearTimeout(patience));
   if (!media) return;
 
   try {
@@ -117,17 +126,37 @@ export async function deliver(ctx: CommandContext, url: string, delivery: Delive
     // Very large videos, and containers WhatsApp cannot play, go out as files.
     const megabytes = media.sizeBytes / (1024 * 1024);
     const asDocument = delivery.asDocument || !media.playable || (delivery.kind === 'video' && megabytes > Math.min(64, delivery.largeAsDocument ? maxSizeMb : 64));
-    if (delivery.voice) {
-      const voice = await attempt(ctx, 'Could not make a voice note', () => toVoiceNote({ file: media.file }));
-      if (!voice) return;
-      await ctx.reply({ audio: voice, mimetype: 'audio/ogg; codecs=opus', ptt: true });
-    } else if (asDocument) {
-      await ctx.reply({ document: source, mimetype: media.mimetype, fileName, caption });
-    } else if (delivery.kind === 'audio') {
-      await ctx.reply({ audio: source, mimetype: media.mimetype, fileName });
-    } else {
-      await ctx.reply({ video: source, mimetype: media.mimetype, caption });
-    }
+    // Uploading a big file to WhatsApp can stall without ever failing; that must end in an answer too.
+    const upload = async (content: Parameters<CommandContext['reply']>[0]) => {
+      let timer: NodeJS.Timeout | undefined;
+      try {
+        await Promise.race([ctx.reply(content), new Promise((_, reject) => (timer = setTimeout(() => reject(new DownloadError('WhatsApp did not accept the file in time. Try again, or pick a shorter video.')), sendTimeoutMs(media.sizeBytes))))]);
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+    const sending = async () => {
+      if (delivery.voice) {
+        const voice = await toVoiceNote({ file: media.file });
+        await upload({ audio: voice, mimetype: 'audio/ogg; codecs=opus', ptt: true });
+      } else if (asDocument) {
+        await upload({ document: source, mimetype: media.mimetype, fileName, caption });
+      } else if (delivery.kind === 'audio') {
+        await upload({ audio: source, mimetype: media.mimetype, fileName });
+      } else {
+        await upload({ video: source, mimetype: media.mimetype, caption });
+      }
+      return true;
+    };
+    // Whatever goes wrong while sending is told to the person: a silent failure looks like the bot ignoring them.
+    const delivered = await sending().catch(async (error: unknown) => {
+      ctx.log.error({ err: error }, 'could not send a downloaded file');
+      await ctx.react('❌');
+      const known = error instanceof DownloadError || error instanceof MediaError;
+      await ctx.reply(fail('Could not send the file', known ? error.message : `The file was downloaded (${fileSize(media.sizeBytes)}) but WhatsApp did not take it. Try again, or ask for a smaller one.`)).catch(() => {});
+      return false;
+    });
+    if (!delivered) return;
     await ctx.react('✅');
     recordActivity(ctx.bot.id, 'command', `Downloaded ${delivery.kind === 'audio' ? 'audio' : 'a video'}: ${info.title.slice(0, 80)}`, {
       detail: `${fileSize(media.sizeBytes)} for ${ctx.senderName || ctx.sender}`,
