@@ -35,8 +35,8 @@ function signature(prefix: string, item: Listed): string {
 
 function visibleCommands(ctx: CommandContext): Listed[] {
   const disabled = new Set(ctx.settings.commands.disabled);
-  // The 18+ commands are listed only where they can run: switched on, and never in a group.
-  const adult = ctx.settings.adult.enabled && !ctx.isGroup;
+  // The 18+ commands are listed only where they can run: switched on, and in a group only when it is one the owner allowed.
+  const adult = ctx.settings.adult.enabled && (!ctx.isGroup || ctx.settings.adult.groups.includes(ctx.jid));
   return listCommands().filter(item => !disabled.has(item.name) && (!item.ownerOnly || ctx.isOwner) && (item.category !== 'adult' || adult));
 }
 

@@ -589,7 +589,7 @@ check('18+: the owner switches it on from WhatsApp', getSettings().adult.enabled
 const gated = await say('.phsearch something');
 check('18+: an unconfirmed person is sent to the age check, and nothing is searched', gated.text.includes('*Adults only*') && gated.text.includes('.verify') && gated.sent.length === 1, gated.text);
 const inGroup = await say('.phsearch something', { jid: GROUP });
-check('18+: never in a group, not even for the owner', inGroup.text.includes('Private chats only') && (await say('.phdl https://www.pornhub.com/view_video.php?viewkey=abc', { owner: true, jid: GROUP })).text.includes('Private chats only'), inGroup.text);
+check('18+: not in a group the owner has not allowed, not even for the owner', inGroup.text.includes('Not in this group') && (await say('.phdl https://www.pornhub.com/view_video.php?viewkey=abc', { owner: true, jid: GROUP })).text.includes('Not in this group'), inGroup.text);
 check('18+: verifying in a group is refused, so no document is posted there', (await say('.verify', { jid: GROUP, image: true })).text.includes('Never post an identity document in a group'));
 const howTo = await say('.verify');
 check('18+: without a photo, the check explains itself and what happens to the photo', howTo.text.includes('*Age check*') && howTo.text.includes('not kept by this bot') && howTo.calls.length === 0, howTo.text);
@@ -606,6 +606,29 @@ const zara = newPerson();
 const adultOk = await say('.verify', { from: zara, image: true, wait: 1200 });
 check('18+: an adult is confirmed and remembered by number only', adultOk.text.includes('*Verified*') && getSettings().adult.verified.join() === zara.split('@')[0] && !JSON.stringify(getSettings().adult).includes('1995'), [adultOk.text, getSettings().adult]);
 check('18+: the section appears in the menu, in private chats only', (await say('.menu', { from: zara })).text.includes('🔞 18+') && !(await say('.menu', { jid: GROUP })).text.includes('18+'));
+
+// A group the owner allows: the search works there, and what is downloaded goes to the requester alone.
+check('18+: allowing a group is for owners, from inside the group', (await say('.adult group on', { from: zara, jid: GROUP })).text.includes('Owner command') && (await say('.adult group on', { owner: true })).text.includes('Send it inside the group') && getSettings().adult.groups.length === 0);
+const allowedGroup = await say('.adult group on', { owner: true, jid: GROUP });
+check('18+: the owner allows the search in a group, and is told what that means', getSettings().adult.groups.join() === GROUP && allowedGroup.text.includes('visible to everyone here') && allowedGroup.text.includes('privately'), allowedGroup.text);
+const strangerInGroup = await say('.phsearch something', { jid: GROUP });
+check('18+: in an allowed group an unconfirmed member is sent to verify privately', strangerInGroup.text.includes('*Adults only*') && strangerInGroup.text.includes('message me privately') && strangerInGroup.text.includes('Never post an ID here') && strangerInGroup.sent.length === 1, strangerInGroup.text);
+check('18+: verifying is still refused there', (await say('.verify', { jid: GROUP, image: true })).text.includes('Never post an identity document in a group'));
+const nia = newPerson();
+await say(`.adult allow ${nia.split('@')[0]}`, { owner: true });
+check('18+: a confirmed adult can search in an allowed group', (await say('.phsearch', { from: nia, jid: GROUP })).text.includes('phsearch <words>') && (await say('.phdl https://example.org/video', { from: nia, jid: GROUP })).text.includes('Send a Pornhub link'));
+check('18+: and sees the section in that group\'s menu', (await say('.menu', { from: nia, jid: GROUP })).text.includes('🔞 18+'));
+// Where a download asked for in a group ends up.
+const adultCommandsModule = await src('commands/builtin/adult.ts');
+const groupRequest = { bot: fake, jid: GROUP, sender: nia, isGroup: true, group: meta, msg: { key: { remoteJid: GROUP, id: 'REQ1', participant: nia } }, reply: async () => undefined, send: async () => undefined, react: async () => undefined };
+const quiet = adultCommandsModule.privately(groupRequest);
+sent.length = 0;
+await quiet.reply('the file');
+await quiet.send({ document: Buffer.from('x'), mimetype: 'video/mp4', fileName: 'v.mp4' });
+check('18+: a download asked for in a group is sent to the requester\'s own chat, never into the group', sent.length === 2 && sent.every(item => item.jid === nia) && !sent.some(item => item.jid === GROUP) && sent[0].content.text === 'the file' && quiet.jid === nia && quiet.isGroup === false && quiet.react === groupRequest.react, sent.map(item => [item.jid, Object.keys(item.content)]));
+await say('.adult group off', { owner: true, jid: GROUP });
+check('18+: the owner can take the group out again', getSettings().adult.groups.length === 0 && (await say('.phsearch something', { owner: true, jid: GROUP })).text.includes('Not in this group'));
+await say(`.adult revoke ${nia.split('@')[0]}`, { owner: true });
 check('18+: a confirmed adult gets through the gate', (await say('.phdl https://example.org/video', { from: zara })).text.includes('Send a Pornhub link') && (await say('.phsearch', { from: zara })).text.includes('phsearch <words>'));
 await updateSettings({ downloads: { enabled: false } });
 check('18+: the download switch applies here too', (await say('.phdl https://www.pornhub.com/view_video.php?viewkey=abc', { owner: true })).text.includes('Downloads are switched off'));
@@ -617,7 +640,7 @@ check('18+: and approve by hand', getSettings().adult.verified.join() === '94771
 check('18+: only owners manage it', (await say('.adult off', { from: zara })).text.includes('Owner command') && getSettings().adult.enabled === true);
 const offeredAdult: string[] = await registry.commandsFor(fake, { key: { remoteJid: ME, id: 'X', fromMe: true }, message: { conversation: 'x' } });
 check('18+: the AI assistant is never given these commands, not even for the owner', offeredAdult.includes('song') && !offeredAdult.some(name => ['phsearch', 'phdl', 'verify', 'adult'].includes(name)), offeredAdult.filter(name => name.startsWith('ph')));
-await updateSettings({ adult: { enabled: false, verified: [] } });
+await updateSettings({ adult: { enabled: false, verified: [], groups: [] } });
 
 // ================= voice notes =================
 const aiBefore = { ...getSettings().ai };

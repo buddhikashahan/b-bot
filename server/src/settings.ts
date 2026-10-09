@@ -214,8 +214,13 @@ export const SettingsSchema = z.object({
     .prefault({}),
   adult: z
     .object({
-      /** 18+ commands. Off unless the owner switches them on; private chats only, confirmed adults only. */
+      /** 18+ commands. Off unless the owner switches them on; confirmed adults only. */
       enabled: z.boolean().default(false),
+      /**
+       * Groups where the 18+ search may be used. Everywhere else these commands work in private
+       * chats only. Whatever is downloaded is always sent privately, never into a group.
+       */
+      groups: z.array(z.string().regex(/^[\d-]{5,40}@g\.us$/)).max(100).default([]),
       /** People confirmed as adults, by the document check or by an owner: their numbers, digits only. */
       verified: z.array(PhoneNumber).max(1000).default([])
     })

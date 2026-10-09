@@ -96,7 +96,7 @@ export interface Settings {
   groups: { defaultWelcome: string; defaultFarewell: string };
   broadcast: { minDelayMs: number; maxDelayMs: number };
   branding: { botName: string; coverOnMenu: boolean };
-  adult: { enabled: boolean; verified: string[] };
+  adult: { enabled: boolean; groups: string[]; verified: string[] };
   moderation: { badWords: string[] };
   menus: { buttons: boolean };
 }

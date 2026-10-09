@@ -14,22 +14,37 @@ const VIDEO_HEIGHT = 480;
 const SEARCH_RESULTS = 8;
 
 /**
- * The gate in front of every 18+ command: switched on, a private chat, and a confirmed adult.
- * Replies and returns false when the command may not run.
+ * The gate in front of every 18+ command: switched on, a confirmed adult, and either a private
+ * chat or a group the owner has allowed. Replies and returns false when the command may not run.
  */
 async function adultsOnly(ctx: CommandContext): Promise<boolean> {
   if (!ctx.settings.adult.enabled) {
     await ctx.reply(fail('18+ features are switched off', 'The owner can turn them on in the dashboard.'));
     return false;
   }
-  // Never in a group, whoever asks: other members did not ask to see it.
-  if (ctx.isGroup) {
-    await ctx.reply(`🔞 ${bold('Private chats only')}\n${quote('18+ commands do not work in groups. Message me directly.')}`);
+  // In a group only where the owner said so, whoever asks: the other members did not ask to see it.
+  if (ctx.isGroup && !ctx.settings.adult.groups.includes(ctx.jid)) {
+    await ctx.reply(`🔞 ${bold('Not in this group')}\n${quote('18+ commands work in private chats, and in groups the owner has allowed. Message me directly.')}`);
     return false;
   }
   if (ctx.isOwner || isVerifiedAdult(ctx.sender)) return true;
-  await ctx.reply(`🔞 ${bold('Adults only')}\n${quote(`Confirm your age first: send a photo of your ID card, passport or driving licence with ${code(`${ctx.prefix}verify`)} as its caption.`)}`);
+  await ctx.reply(
+    ctx.isGroup
+      ? `🔞 ${bold('Adults only')}\n${quote(`Confirm your age first: message me privately and send a photo of your ID with ${code(`${ctx.prefix}verify`)} as its caption. Never post an ID here.`)}`
+      : `🔞 ${bold('Adults only')}\n${quote(`Confirm your age first: send a photo of your ID card, passport or driving licence with ${code(`${ctx.prefix}verify`)} as its caption.`)}`
+  );
   return false;
+}
+
+/**
+ * The same request, answered in the requester's private chat instead of the group it was made in.
+ * Reactions stay on the request, so the group sees that it is being dealt with; everything else
+ * (the file, notices, errors) goes to the person alone.
+ */
+export function privately(ctx: CommandContext): CommandContext {
+  const toContent = (value: Parameters<CommandContext['reply']>[0]) => (typeof value === 'string' ? { text: value } : value);
+  const send: CommandContext['send'] = value => ctx.bot.send(ctx.sender, toContent(value));
+  return { ...ctx, jid: ctx.sender, isGroup: false, group: undefined, reply: send, send };
 }
 
 export const adultCommands: Command[] = [
@@ -95,15 +110,30 @@ export const adultCommands: Command[] = [
     name: 'adult',
     aliases: ['adults', '18plus'],
     category: 'adult',
-    description: 'Owner controls for the 18+ commands: switch them on or off, approve or remove people.',
-    usage: 'adult [on | off | allow <number> | revoke <number> | list]',
+    description: 'Owner controls for the 18+ commands: switch them on or off, approve or remove people, allow the search in a group.',
+    usage: 'adult [on | off | allow <number> | revoke <number> | list | group on|off]',
     ownerOnly: true,
     async execute(ctx) {
       const action = ctx.args[0]?.toLowerCase();
       const { adult } = ctx.settings;
       if (action === 'on' || action === 'off') {
         await updateSettings({ adult: { enabled: action === 'on' } });
-        await ctx.reply(action === 'on' ? `🔞 ${bold('18+ commands on')}\n${note('Private chats only, and only for people confirmed as adults.')}` : `🔞 ${bold('18+ commands off')}`);
+        await ctx.reply(action === 'on' ? `🔞 ${bold('18+ commands on')}\n${note('For people confirmed as adults, in private chats and in groups you allow.')}` : `🔞 ${bold('18+ commands off')}`);
+        return;
+      }
+      if (action === 'group' || action === 'here') {
+        const choice = ctx.args[1]?.toLowerCase();
+        if (!ctx.isGroup || (choice !== 'on' && choice !== 'off')) {
+          await ctx.reply(`${usage(ctx.prefix, 'adult group on|off')}\n${note('Send it inside the group. It allows the 18+ search there; what people download is still sent to them privately.')}`);
+          return;
+        }
+        const groups = choice === 'on' ? [...new Set([...adult.groups, ctx.jid])] : adult.groups.filter(jid => jid !== ctx.jid);
+        await updateSettings({ adult: { groups } });
+        await ctx.reply(
+          choice === 'on'
+            ? `🔞 ${bold('18+ search allowed in this group')}\n${note('Search results (titles) will be visible to everyone here. Downloads go to the requester privately, and only to confirmed adults.')}`
+            : `🔞 ${bold('18+ search no longer allowed in this group')}`
+        );
         return;
       }
       if (action === 'allow' || action === 'approve' || action === 'revoke' || action === 'remove') {
@@ -124,8 +154,13 @@ export const adultCommands: Command[] = [
       }
       await ctx.reply(
         [
-          card('🔞', '18+ commands', [field('Status', adult.enabled ? 'On' : 'Off'), field('Confirmed adults', adult.verified.length), field('Works in', 'Private chats only')]),
-          note(`${code(`${ctx.prefix}adult on`)} / ${code('off')}, ${code('allow <number>')}, ${code('revoke <number>')}, ${code('list')}. People confirm their own age with ${code(`${ctx.prefix}verify`)}.`)
+          card('🔞', '18+ commands', [
+            field('Status', adult.enabled ? 'On' : 'Off'),
+            field('Confirmed adults', adult.verified.length),
+            field('Works in', adult.groups.length ? `Private chats and ${adult.groups.length} group${adult.groups.length === 1 ? '' : 's'}` : 'Private chats only'),
+            ctx.isGroup ? field('This group', adult.groups.includes(ctx.jid) ? 'Search allowed' : 'Not allowed') : ''
+          ]),
+          note(`${code(`${ctx.prefix}adult on`)} / ${code('off')}, ${code('allow <number>')}, ${code('revoke <number>')}, ${code('list')}, ${code('group on')} / ${code('group off')} inside a group. People confirm their own age with ${code(`${ctx.prefix}verify`)}.`)
         ].join('\n')
       );
     }
@@ -134,7 +169,7 @@ export const adultCommands: Command[] = [
     name: 'phsearch',
     aliases: ['ph', 'pornhub'],
     category: 'adult',
-    description: 'Search Pornhub. Reply with a number to download a result.',
+    description: 'Search Pornhub. Reply with a number to download a result; asked in a group, the video is sent to you privately.',
     usage: 'phsearch <words>',
     cooldown: 10,
     async execute(ctx) {
@@ -162,7 +197,7 @@ export const adultCommands: Command[] = [
       await sendMenu(ctx.bot, ctx.jid, {
         header: card('🔞', 'Search results', [field('Query', query), field('Results', found.length)]),
         options,
-        footer: quote(italic('Reply with a number to download that video')),
+        footer: quote(italic(ctx.isGroup ? 'Reply with a number and I will send that video to you privately' : 'Reply with a number to download that video')),
         quoted: ctx.msg,
         style: 'list'
       });
@@ -172,7 +207,7 @@ export const adultCommands: Command[] = [
     name: 'phdl',
     aliases: ['phdownload', 'phvideo'],
     category: 'adult',
-    description: 'Download a Pornhub video from its link. A big one arrives as a document.',
+    description: 'Download a Pornhub video from its link. A big one arrives as a document. Asked in a group, it is sent to you privately.',
     usage: 'phdl <link> [doc]',
     cooldown: 20,
     async execute(ctx) {
@@ -184,8 +219,10 @@ export const adultCommands: Command[] = [
         return;
       }
       const asDocument = /\b(doc|file)\b/i.test(ctx.text.replace(/https?:\/\/\S+/gi, ' '));
+      // The file itself never goes into a group: it is sent to whoever asked, in their own chat.
+      if (ctx.isGroup) await ctx.reply(`📩 ${bold('Sending it to you privately')}\n${quote('Look in your chat with me in a moment.')}`);
       // These are long videos: one too big to play in the chat arrives as a file rather than shrunk.
-      await deliver(ctx, url, { kind: 'video', maxHeight: VIDEO_HEIGHT, asDocument, largeAsDocument: true }, '🔞', 'Video');
+      await deliver(ctx.isGroup ? privately(ctx) : ctx, url, { kind: 'video', maxHeight: VIDEO_HEIGHT, asDocument, largeAsDocument: true }, '🔞', 'Video');
     }
   }
 ];

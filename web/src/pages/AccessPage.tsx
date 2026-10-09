@@ -122,7 +122,7 @@ export function AccessPage() {
 
         <Card
           title="18+ commands"
-          description={`Adult search and downloads (${commands.prefix}phsearch, ${commands.prefix}phdl). They work only in private chats, never in groups, and only for people confirmed as adults.`}
+          description={`Adult search and downloads (${commands.prefix}phsearch, ${commands.prefix}phdl), only for people confirmed as adults. They work in private chats, and the search also in groups you allow below; a download is always sent privately.`}
         >
           <Toggle
             label="Allow 18+ commands"
@@ -143,6 +143,26 @@ export function AccessPage() {
               <div className="grid gap-3 md:grid-cols-2">
                 <ChatSearch items={contactItems} exclude={adult.verified.map(phone => `${phone}@s.whatsapp.net`)} placeholder="Search your contacts" onPick={jid => approveAdult(jid.split('@')[0])} />
                 <AddNumber label="Number to approve" onAdd={approveAdult} />
+              </div>
+              <div className="border-t border-line pt-4">
+                <p className="mb-2 text-sm font-medium">Groups where the search is allowed</p>
+                <Chips
+                  empty="None. The 18+ commands work in private chats only."
+                  items={adult.groups.map(jid => ({ key: jid, label: groupNames.get(jid) ?? jid }))}
+                  onRemove={jid => saveSettings('adult', { groups: adult.groups.filter(item => item !== jid) })}
+                />
+                <div className="mt-3 max-w-md">
+                  <ChatSearch
+                    items={targets.groups.map(group => ({ jid: group.jid, name: group.name, detail: `${group.size} members` }))}
+                    exclude={adult.groups}
+                    placeholder={targets.groups.length ? 'Search your groups' : 'Connect WhatsApp to list your groups'}
+                    onPick={jid => !adult.groups.includes(jid) && saveSettings('adult', { groups: [...adult.groups, jid] })}
+                  />
+                </div>
+                <p className="mt-2 text-xs text-muted">
+                  Everyone in such a group sees the search results (video titles, no pictures), so allow it only where every member is an adult who expects it. Whatever someone downloads goes to their private chat, never
+                  into the group. From WhatsApp: <code className="font-mono">{commands.prefix}adult group on</code> inside the group.
+                </p>
               </div>
               <p className="text-xs text-muted">
                 People can also confirm their own age with <code className="font-mono">{commands.prefix}verify</code>: they send a photo of an ID card, passport or driving licence, the AI reads the date of birth, and
