@@ -58,6 +58,18 @@ export interface Settings {
   viewOnce: { enabled: boolean; destination: 'alert' | 'chat'; onReply: boolean; notify: boolean };
   status: { autoView: boolean; forward: boolean };
   calls: { reject: boolean; message: string; voiceGreeting: boolean; voiceMessage: string };
+  news: {
+    language: 'si' | 'en' | 'both';
+    alerts: boolean;
+    chats: string[];
+    categories: ('2' | '3' | '4' | '5')[];
+    images: boolean;
+    voiceClips: boolean;
+    intervalSeconds: number;
+    quietHours: boolean;
+    quietFrom: string;
+    quietTo: string;
+  };
   autoReply: {
     enabled: boolean;
     rules: AutoReplyRule[];
@@ -99,7 +111,8 @@ export type ActivityType =
   | 'ai'
   | 'menu'
   | 'job'
-  | 'member';
+  | 'member'
+  | 'news';
 
 export interface ActivityEntry {
   id: string;
@@ -122,6 +135,16 @@ export interface AuthStatus {
   setupRequired: boolean;
   managedByEnv: boolean;
   minPasswordLength: number;
+}
+
+/** What the news watcher is doing (GET /api/news). */
+export interface NewsStatus {
+  lastCheckAt: number | null;
+  lastError: string | null;
+  lastStory: { id: number; title: string; at: number } | null;
+  sent: number;
+  /** Quiet hours are in effect right now. */
+  quiet: boolean;
 }
 
 export interface TargetList {

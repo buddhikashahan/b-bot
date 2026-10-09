@@ -2,6 +2,7 @@ import { buildServer } from './api/server.js';
 import { adoptCarriedPassword } from './api/system-routes.js';
 import { purgeOrphanUploads } from './api/job-routes.js';
 import { loadCommands } from './commands/registry.js';
+import { startNewsAlerts, stopNewsAlerts } from './features/news.js';
 import { config } from './config.js';
 import { connectDatabase, prisma } from './db.js';
 import { onExitRequested } from './lifecycle.js';
@@ -35,6 +36,7 @@ async function main(): Promise<void> {
     log.info('shutting down');
     // Never hang forever on a stuck socket or query.
     setTimeout(() => process.exit(code), 10_000).unref();
+    stopNewsAlerts();
     await scheduler.stop().catch(() => {});
     await sessions.shutdown().catch(() => {});
     await app.close().catch(() => {});
@@ -47,6 +49,7 @@ async function main(): Promise<void> {
 
   await sessions.boot();
   await scheduler.start();
+  startNewsAlerts(() => sessions.get());
   void purgeOrphanUploads().catch(() => {});
 }
 

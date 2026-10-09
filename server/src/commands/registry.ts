@@ -20,6 +20,7 @@ import { generalCommands } from './builtin/general.js';
 import { infoCommands } from './builtin/info.js';
 import { languageCommands } from './builtin/language.js';
 import { mediaCommands } from './builtin/media.js';
+import { newsCommands } from './builtin/news.js';
 import { utilityCommands } from './builtin/utility.js';
 import type { Command, CommandContext, QuotedMessage } from './types.js';
 
@@ -68,6 +69,7 @@ export async function loadCommands(): Promise<void> {
     ...aiCommands,
     ...downloadCommands,
     ...infoCommands,
+    ...newsCommands,
     ...discoverCommands,
     ...mediaCommands,
     ...languageCommands,

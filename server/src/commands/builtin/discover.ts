@@ -180,11 +180,11 @@ export const discoverCommands: Command[] = [
     })
   },
   {
-    name: 'news',
-    aliases: ['headlines'],
+    name: 'worldnews',
+    aliases: ['headlines', 'world', 'gnews'],
     category: 'info',
-    description: 'Latest headlines, optionally about a topic.',
-    usage: 'news [topic]',
+    description: 'World headlines in English from Google News, optionally about a topic.',
+    usage: 'worldnews [topic]',
     cooldown: 10,
     execute: lookup(async ctx => {
       const topic = ctx.text.trim();

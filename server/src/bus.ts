@@ -21,7 +21,8 @@ export type ActivityType =
   | 'ai'
   | 'menu'
   | 'job'
-  | 'member';
+  | 'member'
+  | 'news';
 
 export interface ActivityEntry {
   id: string;

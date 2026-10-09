@@ -17,6 +17,9 @@ export const DEFAULT_AWAY_MESSAGE = "👋 I'm away right now and will reply as s
 const DEVELOPER_NUMBER = '94766866297';
 
 const PhoneNumber = z.string().regex(/^\d{6,16}$/);
+/** Any chat: a person, a group or a channel. */
+const ChatId = z.string().regex(/^\d{5,20}(-\d{5,20})?@(s\.whatsapp\.net|g\.us|lid|newsletter)$/);
+const ClockTime = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/);
 const ChatScope = z.enum(['all', 'private', 'groups']);
 
 export const AutoReplyRuleSchema = z.object({
@@ -180,6 +183,27 @@ export const SettingsSchema = z.object({
       voice: z.string().trim().regex(/^[A-Za-z]{2,30}$/).default('Kore'),
       /** How many of the latest messages of a chat are sent along as context. 0 = no memory. */
       historyMessages: z.number().int().min(0).max(40).default(12)
+    })
+    .prefault({}),
+  news: z
+    .object({
+      /** Language of headlines and stories: Sinhala, English, or the headline in both. */
+      language: z.enum(['si', 'en', 'both']).default('si'),
+      /** Post every new story to `chats` as soon as it is published. */
+      alerts: z.boolean().default(false),
+      chats: z.array(ChatId).max(50).default([]),
+      /** Category ids to alert about (2 incidents, 3 voice, 4 announcements, 5 statements). Empty means all. */
+      categories: z.array(z.enum(['2', '3', '4', '5'])).default([]),
+      /** Send the story's picture with the alert. */
+      images: z.boolean().default(true),
+      /** Send the recording that comes with "voice" stories. */
+      voiceClips: z.boolean().default(true),
+      /** How often to look for new stories. */
+      intervalSeconds: z.number().int().min(30).max(3600).default(60),
+      /** Hold alerts back between these times (Sri Lanka time) and send one summary afterwards. */
+      quietHours: z.boolean().default(false),
+      quietFrom: ClockTime.default('22:00'),
+      quietTo: ClockTime.default('06:00')
     })
     .prefault({}),
   downloads: z

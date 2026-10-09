@@ -66,7 +66,9 @@ const fake: any = {
     readMessages: async (keys: unknown) => void sockCalls.push(['readMessages', keys]),
     requestPlaceholderResend: async (key: unknown) => void sockCalls.push(['requestPlaceholderResend', key]),
     rejectCall: async (...args: unknown[]) => void sockCalls.push(['rejectCall', ...args]),
-    profilePictureUrl: async () => undefined
+    profilePictureUrl: async () => undefined,
+    // Every number has an account except the ones ending in 000, like a mistyped one.
+    onWhatsApp: async (jid: string) => (jid.includes('000@') ? [] : [{ jid, exists: true }])
   },
   requireSock() {
     return this.sock;
@@ -324,6 +326,75 @@ await updateSettings({ general: { autoRead: false } });
 
 // --- activity log ---------------------------------------------------------------------------------
 await sleep(300);
+// --- forwarding ---------------------------------------------------------------------------------------
+const forwarding = await src('features/forward.ts');
+const baileys = await import('@whiskeysockets/baileys');
+const parsed = forwarding.parseTargets('94771234567, +94 76 686 6297; 120363000000000002@g.us 94700000009@c.us\n(94771234567) hello 0771234567 123 +1 (415) 555-2671 +44 20 7946 0958', ['94700000055:3@s.whatsapp.net']);
+check('forward: numbers, formatted numbers, chat IDs and mentions are targets; the rest is reported', parsed.targets.join() === ['94700000055@s.whatsapp.net', '94771234567@s.whatsapp.net', '94766866297@s.whatsapp.net', GROUP2, '94700000009@s.whatsapp.net', '14155552671@s.whatsapp.net', '442079460958@s.whatsapp.net'].join() && parsed.unknown.join() === 'hello,0771234567,123', parsed);
+check('forward: several numbers separated by spaces stay separate', forwarding.parseTargets('94771234567 94777654321').targets.length === 2 && forwarding.parseTargets('@94771234567', ['94771234567@s.whatsapp.net']).targets.length === 1 && forwarding.parseTargets('+94 76 686 6297 94771234567').targets.join() === '94766866297@s.whatsapp.net,94771234567@s.whatsapp.net');
+const guessed = forwarding.parseTargets('771234567 555-2671 0771234567 94 771234567, 123 94771234567, +372 5123 456');
+check('forward: a number without its country code is refused, never guessed at', guessed.targets.join() === ['94771234567@s.whatsapp.net', '3725123456@s.whatsapp.net'].join() && guessed.unknown.join() === '771234567,555-2671,0771234567,123', guessed);
+
+// A 2 GB file as it sits in a WhatsApp message: an address and a key, not the bytes.
+const bigFile = {
+  documentMessage: {
+    url: 'https://mmg.whatsapp.net/v/t62.7119-24/big.enc',
+    directPath: '/v/t62.7119-24/big.enc',
+    mediaKey: Buffer.alloc(32, 7),
+    fileEncSha256: Buffer.alloc(32, 8),
+    fileSha256: Buffer.alloc(32, 9),
+    fileLength: 2_040_109_465,
+    mimetype: 'video/mp4',
+    fileName: 'holiday film.mp4',
+    caption: 'the whole trip',
+    contextInfo: { stanzaId: 'OLDER', participant: BOB, quotedMessage: { conversation: 'an earlier message' } }
+  }
+};
+let downloads = 0;
+const realDownload = fake.download;
+fake.download = async (...args: unknown[]) => {
+  downloads++;
+  return realDownload(...args);
+};
+reset();
+await upsert(textMsg(`C${++n}`, ALICE, `.forward 94771234567, ${GROUP} +94 76 686 6297`, undefined, true, { contextInfo: { stanzaId: 'BIG1', participant: ALICE, quotedMessage: bigFile } }), 2400);
+const forwards = sent.filter(item => item.content.forward);
+check('forward: the message goes to every chat named', forwards.map(item => item.jid).join() === ['94771234567@s.whatsapp.net', GROUP, '94766866297@s.whatsapp.net'].join(), sent.map(item => [item.jid, Object.keys(item.content)]));
+check('forward: nothing is downloaded, whatever the size', downloads === 0);
+const wire = forwards[0] ? baileys.generateForwardMessageContent(forwards[0].content.forward, forwards[0].content.force) : undefined;
+check('forward: what is sent is the same upload with its key, marked as forwarded, without the old reply context', wire?.documentMessage?.url === bigFile.documentMessage.url && Buffer.from(wire.documentMessage.mediaKey).equals(bigFile.documentMessage.mediaKey) && wire.documentMessage.directPath === bigFile.documentMessage.directPath && Number(wire.documentMessage.fileLength) === 2_040_109_465 && wire.documentMessage.caption === 'the whole trip' && wire.documentMessage.contextInfo.isForwarded === true && !wire.documentMessage.contextInfo.quotedMessage, wire?.documentMessage && { ...wire.documentMessage, mediaKey: undefined, fileSha256: undefined, fileEncSha256: undefined });
+const summary = sent.find(item => item.content.text?.includes('*Forwarded*'))?.content.text ?? '';
+check('forward: the reply says what went where', summary.includes('*Message:* holiday film.mp4 (1.9 GB)') && summary.includes('*Sent to:* 3 of 3') && summary.includes(`✅ ${meta.subject}`) && summary.includes('✅ +94771234567') && summary.includes('✅ +94766866297') && !summary.includes('Skipped'), summary);
+
+reset();
+const realSend = fake.send;
+fake.send = async (jid: string, content: any) => {
+  if (content.forward && jid.startsWith('9477')) throw new Error('not on WhatsApp');
+  return realSend.call(fake, jid, content);
+};
+await upsert(textMsg(`C${++n}`, ALICE, `.fwd 94771234567 ${GROUP2} 94771234000 banana`, undefined, true, { contextInfo: { stanzaId: 'BIG1', participant: ALICE, quotedMessage: { conversation: 'just words' } } }), 2600);
+const partial = sent.find(item => item.content.text?.includes('*Forwarded*'))?.content.text ?? '';
+check('forward: a chat that fails is reported and does not stop the others', sent.some(item => item.content.forward && item.jid === GROUP2) && partial.includes('*Sent to:* 1 of 3') && partial.includes('❌ +94771234567') && partial.includes('banana') && partial.includes('a text message'), partial);
+check('forward: a number with no WhatsApp account is not sent to at all', !sent.some(item => item.jid === '94771234000@s.whatsapp.net') && partial.includes('❌ +94771234000 (not on WhatsApp)'), partial);
+fake.send = realSend;
+
+reset();
+await upsert({ key: { remoteJid: ALICE, id: `C${++n}`, fromMe: true }, message: { videoMessage: { ...bigFile.documentMessage, fileName: undefined, contextInfo: undefined, caption: `.forward ${GROUP}` } }, messageTimestamp: now(), pushName: 'Me' }, 900);
+const own = sent.find(item => item.content.forward)?.content.forward;
+check('forward: a file sent with the command as its caption is forwarded without that caption', own?.message.videoMessage.url === bigFile.documentMessage.url && own.message.videoMessage.caption === undefined && sent.filter(item => item.content.forward).length === 1, own?.message.videoMessage && Object.keys(own.message.videoMessage));
+check('forward: explains itself without a message or without a chat', (await run('.forward 94771234567', ALICE, undefined, true))?.includes('Reply to the message to forward') && (await run('.forward', ALICE, undefined, true, { contextInfo: { stanzaId: 'BIG1', participant: ALICE, quotedMessage: bigFile } }))?.includes('Name at least one chat'));
+// An owner added in the dashboard, writing from their own phone (not the linked account).
+const realIsOwner = fake.isOwner;
+fake.isOwner = async (ids: string[]) => ids.includes(ME) || ids.includes(BOB);
+reset();
+await upsert({ ...textMsg(`C${++n}`, BOB, `.forward ${GROUP} 94771234567`, undefined, false, { contextInfo: { stanzaId: 'BIG1', participant: BOB, quotedMessage: bigFile } }), pushName: 'Bob' }, 1800);
+check('forward: an added owner can forward from their own chat with the bot', sent.filter(item => item.content.forward).map(item => item.jid).join() === [GROUP, '94771234567@s.whatsapp.net'].join() && sent.some(item => item.jid === BOB && item.content.text?.includes('*Sent to:* 2 of 2')), sent.map(item => [item.jid, Object.keys(item.content)]));
+fake.isOwner = realIsOwner;
+reset();
+await upsert(textMsg(`C${++n}`, ALICE, `.forward ${GROUP}`, undefined, false, { contextInfo: { stanzaId: 'BIG1', participant: ALICE, quotedMessage: bigFile } }), 500);
+check('forward: only owners may forward', !sent.some(item => item.content.forward) && sent[0]?.content.text?.includes('Owner command'), sent.map(item => item.content));
+fake.download = realDownload;
+
 const feed = await recentActivity('default', 200);
 const types = new Set(feed.map((entry: any) => entry.type));
 check('activity: feed covers the things that happened', ['viewonce', 'edited', 'deleted', 'command', 'autoreply', 'call'].every(type => types.has(type)), [...types]);

@@ -5,6 +5,7 @@ import {
   ListOrdered,
   Megaphone,
   MessageSquareReply,
+  Newspaper,
   Pencil,
   PhoneOff,
   Search,
@@ -31,7 +32,8 @@ export const ACTIVITY: Record<ActivityType, { label: string; icon: LucideIcon; t
   ai: { label: 'AI answers', icon: Sparkles, tone: 'bg-accent-soft text-accent' },
   menu: { label: 'Menus', icon: ListOrdered, tone: 'bg-raised text-muted' },
   job: { label: 'Scheduled', icon: CalendarClock, tone: 'bg-raised text-muted' },
-  member: { label: 'Members', icon: UserPlus, tone: 'bg-raised text-muted' }
+  member: { label: 'Members', icon: UserPlus, tone: 'bg-raised text-muted' },
+  news: { label: 'News alerts', icon: Newspaper, tone: 'bg-accent-soft text-accent' }
 };
 
 /** Inline WhatsApp markup: ```mono```, `code`, *bold*, _italic_, ~strike~. */

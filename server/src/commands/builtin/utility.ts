@@ -1,11 +1,35 @@
 import { randomInt } from 'node:crypto';
 import QRCode from 'qrcode';
+import { isJidGroup, jidNormalizedUser } from '@whiskeysockets/baileys';
 import { phoneOf, setChatBlocked, setUserBlocked } from '../../features/access.js';
+import { MAX_FORWARD_TARGETS, forwardable, parseTargets } from '../../features/forward.js';
 import { revealViewOnce } from '../../features/view-once.js';
 import { getSettings, updateSettings, type SettingsPatch } from '../../settings.js';
-import { bold, card, code, field, mono, note } from '../../whatsapp/format.js';
-import { userPart } from '../../whatsapp/message-utils.js';
+import { bold, card, code, fail, field, fileSize, mono, note, usage } from '../../whatsapp/format.js';
+import { contentOf, displayNumber, kindOf, mediaOf, userPart } from '../../whatsapp/message-utils.js';
 import type { Command, CommandContext } from '../types.js';
+
+/** Pause between two chats when forwarding to several, so it does not arrive as one burst. */
+const FORWARD_PAUSE_MS = 700;
+/** A chat that does not take the message within this long is reported as failed instead of holding up the rest. */
+const FORWARD_TIMEOUT_MS = 30_000;
+
+/**
+ * The WhatsApp account behind a phone-number target, which can differ from the number as typed
+ * (some countries write numbers one way and register them another).
+ * @returns undefined when the number has no account: a typo must not go any further
+ */
+async function accountOf(ctx: CommandContext, jid: string): Promise<string | undefined> {
+  if (!jid.endsWith('@s.whatsapp.net')) return jid;
+  try {
+    const [found] = (await ctx.sock.onWhatsApp(jid)) ?? [];
+    return found?.exists ? jidNormalizedUser(found.jid) : undefined;
+  } catch (err) {
+    // The look-up itself failed, which says nothing about the number: let the send decide.
+    ctx.log.debug({ err }, 'could not check a number before forwarding');
+    return jid;
+  }
+}
 
 function parseToggle(value: string | undefined): boolean | undefined {
   if (['on', 'enable', 'true', '1'].includes(value ?? '')) return true;
@@ -328,6 +352,81 @@ export const utilityCommands: Command[] = [
       }
       await ctx.bot.send(target, { forward: ctx.quoted.message });
       await ctx.react('✅');
+    }
+  },
+  {
+    name: 'forward',
+    aliases: ['fwd', 'fw', 'sendto'],
+    category: 'utility',
+    description: 'Forward the message you reply to into other chats. Files of any size go at once: nothing is downloaded.',
+    usage: 'forward <number or chat ID> [more...]',
+    ownerOnly: true,
+    async execute(ctx) {
+      // What to pass on: the message replied to, or a file sent with this command as its caption.
+      const attached = !ctx.quoted && mediaOf(contentOf(ctx.msg.message)) ? forwardable(ctx.msg, true) : undefined;
+      const source = ctx.quoted ? forwardable(ctx.quoted.message) : attached;
+      const { targets, unknown } = parseTargets(ctx.text, ctx.mentions);
+      if (!source || targets.length === 0) {
+        await ctx.reply(
+          [
+            usage(ctx.prefix, 'forward <number or chat ID> [more...]', 'forward 94771234567 120363025246125888@g.us'),
+            note(
+              source
+                ? `Name at least one chat: a number with its country code, or a chat ID (send ${ctx.prefix}jid in a chat to see its ID).`
+                : 'Reply to the message to forward, or send a file with this command as its caption. Separate several chats with spaces or commas.'
+            ),
+            unknown.length ? note(`Not a chat: ${unknown.slice(0, 5).join(', ')}. Numbers need their country code.`) : ''
+          ]
+            .filter(Boolean)
+            .join('\n')
+        );
+        return;
+      }
+      if (targets.length > MAX_FORWARD_TARGETS) {
+        await ctx.reply(fail('Too many chats at once', `Forward to at most ${MAX_FORWARD_TARGETS} chats per command.`));
+        return;
+      }
+
+      await ctx.react('⏳');
+      const groups = new Map(ctx.bot.listGroups().map(group => [group.id, group.subject]));
+      const label = (jid: string) => (isJidGroup(jid) ? (groups.get(jid) ?? jid) : jid.endsWith('@newsletter') ? jid : displayNumber(jid));
+      const delivered: string[] = [];
+      const failed: string[] = [];
+      for (const [index, jid] of targets.entries()) {
+        if (index > 0) await new Promise(resolve => setTimeout(resolve, FORWARD_PAUSE_MS));
+        let timer: NodeJS.Timeout | undefined;
+        try {
+          const account = await accountOf(ctx, jid);
+          if (!account) {
+            failed.push(`${label(jid)} (not on WhatsApp)`);
+            continue;
+          }
+          await Promise.race([
+            ctx.bot.send(account, { forward: source }),
+            new Promise((_, reject) => (timer = setTimeout(() => reject(new Error('timed out')), FORWARD_TIMEOUT_MS)))
+          ]);
+          delivered.push(label(jid));
+        } catch (err) {
+          ctx.log.warn({ err }, `could not forward to ${jid}`);
+          failed.push(label(jid));
+        } finally {
+          clearTimeout(timer);
+        }
+      }
+
+      const content = contentOf(source.message);
+      const media = mediaOf(content);
+      const what = media ? [media.fileName ?? `a ${media.kind}`, media.sizeBytes ? `(${fileSize(media.sizeBytes)})` : ''].filter(Boolean).join(' ') : `a ${kindOf(content)} message`;
+      await ctx.react(delivered.length ? '✅' : '❌');
+      await ctx.reply(
+        [
+          card('📨', 'Forwarded', [field('Message', what), field('Sent to', `${delivered.length} of ${targets.length}`), ...delivered.map(name => `✅ ${name}`), ...failed.map(name => `❌ ${name}`)]),
+          failed.length ? note('A chat fails when the number is not on WhatsApp or the bot is not in that group.') : '',
+          unknown.length ? note(`Skipped, not a chat: ${unknown.slice(0, 5).join(', ')}. Numbers need their country code.`) : ''
+        ]
+          .filter(Boolean)
+          .join('\n')
+      );
     }
   },
 

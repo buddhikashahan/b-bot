@@ -20,18 +20,24 @@ const SCOPE_HELP: Record<ChatScope, string> = {
 function AddNumber({ onAdd, label }: { onAdd: (phone: string) => void; label: string }) {
   const [value, setValue] = useState('');
   const digits = value.replace(/\D/g, '');
+  // WhatsApp knows people by their full international number: "0771234567" would never match anyone.
+  const local = digits.startsWith('0');
+  const valid = digits.length >= 6 && digits.length <= 16 && !local;
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    if (digits.length < 6) return;
+    if (!valid) return;
     onAdd(digits);
     setValue('');
   };
   return (
-    <form onSubmit={submit} className="flex gap-2">
-      <Input aria-label={label} inputMode="numeric" placeholder="Number with country code, e.g. 15551234567" value={value} onChange={event => setValue(event.target.value)} />
-      <Button type="submit" disabled={digits.length < 6 || digits.length > 16} icon={<Plus className="h-4 w-4" />}>
-        Add
-      </Button>
+    <form onSubmit={submit}>
+      <div className="flex gap-2">
+        <Input aria-label={label} inputMode="numeric" placeholder="Number with country code, e.g. 15551234567" value={value} onChange={event => setValue(event.target.value)} />
+        <Button type="submit" disabled={!valid} icon={<Plus className="h-4 w-4" />}>
+          Add
+        </Button>
+      </div>
+      {local && <p className="mt-1.5 text-xs text-muted">Start with the country code instead of 0, for example 94771234567.</p>}
     </form>
   );
 }

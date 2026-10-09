@@ -8,6 +8,7 @@ import {
   LogOut,
   Menu,
   MessageSquareReply,
+  Newspaper,
   ScrollText,
   Settings as SettingsIcon,
   ShieldCheck,
@@ -34,6 +35,7 @@ import { HelpPage } from './pages/HelpPage';
 import { LoginPage, Logo } from './pages/LoginPage';
 import { LogsPage } from './pages/LogsPage';
 import { MenusPage } from './pages/MenusPage';
+import { NewsPage } from './pages/NewsPage';
 import { OverviewPage } from './pages/OverviewPage';
 import { ProtectionPage } from './pages/ProtectionPage';
 import { SchedulerPage } from './pages/SchedulerPage';
@@ -57,6 +59,7 @@ const PAGES: PageDef[] = [
   { id: 'replies', label: 'Auto-replies', icon: MessageSquareReply, component: AutoReplyPage, group: 'Automation' },
   { id: 'groups', label: 'Groups', icon: Users, component: GroupsPage, group: 'Automation' },
   { id: 'scheduler', label: 'Scheduler', icon: CalendarClock, component: SchedulerPage, group: 'Automation' },
+  { id: 'news', label: 'News', icon: Newspaper, component: NewsPage, group: 'Automation' },
   { id: 'access', label: 'Access', icon: KeyRound, component: AccessPage, group: 'Control' },
   { id: 'commands', label: 'Commands', icon: SquareTerminal, component: CommandsPage, group: 'Control' },
   { id: 'activity', label: 'Activity', icon: Activity, component: ActivityPage, group: 'System' },

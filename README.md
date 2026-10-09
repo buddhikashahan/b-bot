@@ -10,6 +10,7 @@ A self-hosted WhatsApp bot with a web dashboard, built on [Baileys](https://gith
 - **Anti-delete and anti-edit**: recovers messages deleted for everyone, and shows edits before/after
 - **Anti view-once**: saves view-once photos, videos and voice notes as normal media (see the note below on how)
 - **Status automation**: auto-view and/or forward contacts' statuses
+- **News**: Sri Lankan news from Helakuru Esana in Sinhala and English, on request and as real-time alerts to chats of your choice
 - **Call rejection**: declines calls and tells the caller to message instead, in text or with a spoken voice note
 - **AI assistant**: Google Gemini answers ordinary messages, with your own instructions, photo understanding and per-chat memory
 - **Reply-by-number menus**: the bot's own menu, search results, download format choices, and menus you design in the dashboard; optionally as tappable buttons
@@ -22,7 +23,7 @@ A self-hosted WhatsApp bot with a web dashboard, built on [Baileys](https://gith
 - **Voice conversations**: the assistant listens to voice notes and answers with a voice note in the same language
 - **Text to speech and translation**: natural AI voices and AI translation with a Gemini key, basic free services without one
 - **Look-ups**: films and series, news, crypto prices, world clock, Wikipedia, dictionary, weather, translation, currency, link shortener, GitHub
-- **Commands and plugins**: 128 built-in chat commands with WhatsApp-formatted replies, plus drop-in plugin files
+- **Commands and plugins**: 131 built-in chat commands with WhatsApp-formatted replies, plus drop-in plugin files
 - **Your branding**: bot name, cover image on the menu, and a developer card with contact, website and profile link
 - **Dashboard**: works on phones, tablets and desktops; getting-started guide, quick switches, live activity feed, instant-save settings, built-in help, live logs
 - **Any database**: SQLite out of the box; PostgreSQL, MySQL or MongoDB by changing one URL
@@ -300,6 +301,36 @@ the **Menus** page. The bot's name and the developer card (name, website, profil
 that is also shared as a contact card) are edited under **Settings > Branding and developer**; clear a
 field to leave it off the card.
 
+**News.** `.news` lists the ten latest stories from [Helakuru Esana](https://www.helakuru.lk/esana) (through
+[esana-news-sdk](https://github.com/buddhikashahan/esana-news-sdk)) on the picture of the first one;
+replying with a number sends that story in full, with its picture and, for recorded statements, the audio.
+`.news top` shows the top stories, `.news incidents` (or `statements`, `notices`, `voice`) one topic, and
+any other words search the stories of the last few days. Put `en`, `si` or `both` first to choose the
+language for one request: `.news en top`. `.worldnews [topic]` has international headlines in English.
+
+**News alerts** post every new story to chats you choose, as soon as it is published: switch them on and
+pick the chats on the **News** page, or send `.newsalerts on` in a chat (owners only; `here`, `remove`,
+`add <chats>`, `lang`, `test` and `off` do the rest). A chat can be a person, a group, or a channel the
+linked account is an admin of. The page also sets the language, the topics, whether pictures and voice
+recordings are included, and quiet hours: between those times (Sri Lanka time) nothing is posted, and
+when they end one message lists what was published meanwhile, to read by replying with a number.
+
+- The bot looks for news every minute by default. Stories are remembered by number, so each one is sent
+  once, also across restarts.
+- Switching alerts on sends nothing: only stories published from then on count. After a long gap (the bot
+  was offline) at most the five newest stories are sent, and none older than six hours.
+- If the news service does not answer, the page says so and the next check tries again.
+
+**Forwarding.** Reply to any message with `.forward` followed by the chats it should go to, or send a
+file with that as its caption: `.forward 94771234567, 120363025246125888@g.us`. Chats are phone numbers
+with their country code, chat IDs (send `.jid` in a chat to see its ID) or @mentions, up to 25 at a time,
+separated by spaces or commas. A number without its country code is refused rather than guessed at, and
+each number is checked against WhatsApp first, so a typo does not send your file to a stranger. Nothing is
+downloaded or uploaded: a WhatsApp message holds only the address
+and key of a file, and forwarding copies that, so a 2 GB video reaches ten chats in seconds. Two limits
+come from WhatsApp itself: files stay on its servers for about two weeks, after which a forward can no
+longer be opened, and a message forwarded many times gets the "forwarded many times" label. Owners only.
+
 **Look-ups.** `.imdb`, `.news`, `.crypto`, `.time`, `.wiki`, `.define`, `.weather`, `.translate`, `.convert`,
 `.shorten` and `.github` call free public services (Cinemeta, Google News, CoinGecko, Open-Meteo,
 Wikipedia, dictionaryapi.dev with Wiktionary as its stand-in, MyMemory, open.er-api.com, is.gd / TinyURL, GitHub). The text people
@@ -327,12 +358,12 @@ The default prefix is `.` (change it on the **Commands** page). Send `.menu` for
 | General | `menu`, `ping`, `uptime`, `botinfo`, `owner`, `developer`, `report`, `jid` |
 | AI assistant | `ai`, `summarize`, `ocr`, `describe`, `resetai` |
 | Downloads | `yts`, `song`, `video`, `play`, `yta`, `ytv`, `thumb`, `ytpick`, `fb`, `tiktok`, `insta`, `x`, `pin`, `threads`, `snap`, `reddit`, `soundcloud`, `vimeo`, `dailymotion`, `twitch`, `bilibili`, `likee` |
-| Search & info | `imdb`, `news`, `crypto`, `time`, `wiki`, `define`, `weather`, `convert`, `shorten`, `github` |
+| Search & info | `news`, `worldnews`, `imdb`, `crypto`, `time`, `wiki`, `define`, `weather`, `convert`, `shorten`, `github` |
 | Media | `sticker`, `circle`, `toimg`, `tomp3`, `tovn`, `togif`, `trim`, `bass`, `nightcore`, `slow`, `fast`, `deep`, `chipmunk`, `reverse`, `blur`, `grey`, `invert`, `vflip`, `mirror`, `rotate`, `enhance`, `meme` |
 | Tools | `tts`, `translate`, `remind <time> <text>`, `calc`, `qr`, `poll`, `pp`, `genpass` |
 | Group admin | `kick`, `add`, `promote`, `demote`, `warn`, `warnings`, `resetwarn`, `del`, `tagall`, `hidetag`, `admins`, `link`, `revoke`, `setname`, `setdesc`, `mute`, `unmute`, `lock`, `unlock`, `antilink`, `welcome`, `goodbye`, `groupinfo` |
 | Fun | `8ball`, `flip`, `roll`, `choose`, `rate`, `joke`, `fact`, `truth`, `dare`, `fancy` |
-| Owner | `mode`, `scope`, `block`, `unblock`, `blocklist`, `ignore`, `antidelete`, `viewonce`, `autostatus`, `anticall`, `autoread`, `autoreply`, `assistant`, `away`, `setprefix`, `vv`, `save`, `dl`, `updatedl`, `leave` |
+| Owner | `mode`, `scope`, `block`, `unblock`, `blocklist`, `ignore`, `antidelete`, `viewonce`, `autostatus`, `anticall`, `autoread`, `autoreply`, `assistant`, `away`, `setprefix`, `vv`, `save`, `forward`, `newsalerts`, `dl`, `updatedl`, `leave` |
 
 `.menu` opens the numbered menu, `.menu all` shows everything in boxed sections, `.menu downloads` opens
 one category and `.menu song` explains one command. Replies use WhatsApp formatting throughout (bold labels, `inline code` for commands, quoted

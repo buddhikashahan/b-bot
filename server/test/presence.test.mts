@@ -59,6 +59,20 @@ await session.send('94700000002@s.whatsapp.net', { text: 'late' }).catch(() => {
 await sleep(2400);
 check('nothing is said while disconnected', told.length === 4, told);
 
+// --- who counts as an owner ---------------------------------------------------------------------------
+// Owner numbers added in the dashboard, checked by the real session (the other suites use a stand-in).
+const OWNER_LID = '123456789012345@lid';
+session.status = 'connected';
+(creds as any).account = { details: 'linked' };
+session.sock.signalRepository = { lidMapping: { getPNForLID: async (lid: string) => (lid === OWNER_LID ? '94766866297:12@s.whatsapp.net' : undefined) } };
+check('owners: only the linked account, until numbers are added', (await session.isOwner(['94700000001@s.whatsapp.net'])) && !(await session.isOwner(['94766866297@s.whatsapp.net'])));
+await updateSettings({ general: { ownerNumbers: ['94766866297', '14155552671'] } });
+check('owners: a number added in the dashboard is an owner', (await session.isOwner(['94766866297@s.whatsapp.net'])) && (await session.isOwner(['14155552671@s.whatsapp.net'])) && !(await session.isOwner(['94770000000@s.whatsapp.net'])));
+check('owners: also when WhatsApp only gives the hidden ID of that person', (await session.isOwner([OWNER_LID])) && !(await session.isOwner(['999999999999999@lid'])));
+check('owners: any of the addresses of a sender is enough', await session.isOwner(['999999999999999@lid', '94766866297@s.whatsapp.net']));
+await updateSettings({ general: { ownerNumbers: [] } });
+check('owners: removing the number takes the rights away at once', !(await session.isOwner(['94766866297@s.whatsapp.net'])));
+
 console.log(failures ? `\n${failures} FAILED` : '\nALL PASSED');
 await prisma.$disconnect();
 process.exit(failures ? 1 : 0);

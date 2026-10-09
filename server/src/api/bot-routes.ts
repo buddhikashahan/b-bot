@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { listCommands, loadCommands } from '../commands/registry.js';
 import { prisma } from '../db.js';
 import { activityStats, recentActivity } from '../features/activity.js';
+import { NewsError, alertText, isQuiet, news, newsStatus, sendStory } from '../features/news.js';
 import { AiError, aiStatus, answeredBy, ask, clearMemory, getApiKey, listModels, setApiKey, verifyKey } from '../features/ai.js';
 import { CustomMenuSchema, createCustomMenu, deleteCustomMenu, listCustomMenus, updateCustomMenu } from '../features/menus.js';
 import { listTargets } from '../features/directory.js';
@@ -192,6 +193,25 @@ export function registerBotRoutes(app: FastifyInstance): void {
   app.delete('/api/ai/memory', async () => ({ removed: await clearMemory(sessions.require().id) }));
 
   // --- reply-by-number menus ---------------------------------------------------------------
+  // News alerts: what the watcher is doing, and a way to see an alert without waiting for news.
+  app.get('/api/news', async () => ({ ...newsStatus(), quiet: isQuiet(getSettings().news) }));
+  app.post('/api/news/test', async () => {
+    const settings = getSettings();
+    if (settings.news.chats.length === 0) throw badRequest('Choose at least one chat for the alerts first.');
+    try {
+      const [story] = await news().latest(1);
+      if (!story) throw badRequest('The news service has no stories right now.');
+      const delivered = await sendStory(sessions.require(), settings.news.chats, story, alertText(story, settings.news.language, settings.commands.prefix), {
+        image: settings.news.images,
+        voice: settings.news.voiceClips
+      });
+      return { delivered, chats: settings.news.chats.length, title: story.titleEn || story.titleSi };
+    } catch (error) {
+      if (error instanceof NewsError) throw badRequest(error.message);
+      throw error;
+    }
+  });
+
   app.get('/api/menus', async () => listCustomMenus(sessions.require().id));
 
   app.post('/api/menus', async req => createCustomMenu(sessions.require().id, CustomMenuSchema.parse(req.body)));

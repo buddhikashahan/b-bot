@@ -754,10 +754,14 @@ if (process.env.BBOT_LIVE_TESTS) {
   check('imdb: choosing a number shows rating, cast and plot with a poster', movie.text.includes('*Inception (2010)*') && /\*IMDb:\* \d\.\d\/10/.test(movie.text) && movie.text.includes('*Cast:*') && movie.text.includes('imdb.com/title/tt1375666') && Boolean(movie.sent[0]?.content.image));
   const coin = await say('.crypto btc', { wait: 6000 });
   check('crypto: live price', coin.text.includes('*Bitcoin (BTC)*') && /\*Price:\* [\d,.]+ USD/.test(coin.text) && coin.text.includes('*24 hours:*'), coin.text);
-  const news = await say('.news technology', { wait: 8000 });
-  check('news: numbered headlines', news.text.includes('*News: technology*') && /\*8\.\* \*/.test(news.text), news.text.slice(0, 200));
+  const news = await say('.worldnews technology', { wait: 8000 });
+  check('worldnews: numbered headlines', news.text.includes('*News: technology*') && /\*8\.\* \*/.test(news.text), news.text.slice(0, 200));
   const story = await say('2', { from: news.from, quote: news.sent[0]?.id });
-  check('news: a number returns the link', /^📰 \*.+\*\nhttps:\/\/news\.google\.com\//.test(story.text), story.text.slice(0, 120));
+  check('worldnews: a number returns the link', /^📰 \*.+\*\nhttps:\/\/news\.google\.com\//.test(story.text), story.text.slice(0, 120));
+  const local = await say('.news en', { wait: 9000 });
+  check('news: the latest Sri Lankan stories from Esana, with a picture', local.text.includes('*Latest news*') && /\*10\.\* \*/.test(local.text) && Boolean(local.sent[0]?.content.image), local.text.slice(0, 300));
+  const full = await say('1', { from: local.from, quote: local.sent[0]?.id, wait: 6000 });
+  check('news: a number sends the whole story with its link', full.text.startsWith('📰 *') && full.text.includes('https://www.helakuru.lk/esana/p/'), full.text.slice(0, 200));
   const clock = await say('.time Tokyo', { wait: 5000 });
   check('time: world clock', clock.text.includes('*Tokyo, Japan*') && clock.text.includes('Asia/Tokyo'), clock.text);
 }

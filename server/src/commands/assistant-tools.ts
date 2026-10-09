@@ -34,7 +34,7 @@ const SITE_COMMAND: Record<Exclude<Site, 'youtube'>, string> = {
 };
 const SITE_NAME: Partial<Record<Site, string>> = { facebook: 'Facebook', tiktok: 'TikTok', instagram: 'Instagram', twitter: 'X', soundcloud: 'SoundCloud' };
 /** Commands that have current information the model does not. */
-const LIVE_INFO = ['weather', 'news', 'crypto'];
+const LIVE_INFO = ['weather', 'news', 'worldnews', 'crypto'];
 
 const QUERY = {
   type: 'string',
