@@ -9,6 +9,7 @@ import {
   parseMediaUrl,
   searchYouTube,
   type AudioQuality,
+  type DownloadedMedia,
   type MediaInfo,
   type MediaKind,
   type Site
@@ -95,21 +96,39 @@ const PATIENCE_MS = 25_000;
 /** Longest wait for WhatsApp to take a file: two minutes, plus two seconds for every megabyte. */
 const sendTimeoutMs = (bytes: number) => 120_000 + (bytes / (1024 * 1024)) * 2000;
 
+/**
+ * Do something slow for a person. If it is still going after a while, say so once: a long video
+ * can take minutes, and the reaction alone looks like nothing is happening.
+ */
+export async function whileWaiting<T>(ctx: CommandContext, work: () => Promise<T>): Promise<T> {
+  const patience = setTimeout(() => {
+    void ctx.reply(`⏳ ${bold('Still downloading')}\n${quote('Long videos take a few minutes. I will send it as soon as it is here.')}`).catch(() => {});
+  }, PATIENCE_MS);
+  try {
+    return await work();
+  } finally {
+    clearTimeout(patience);
+  }
+}
+
 /** Download `url` and deliver it to the chat, with reactions as a progress indicator. */
 export async function deliver(ctx: CommandContext, url: string, delivery: Delivery, icon: string, heading: string): Promise<void> {
   const { maxSizeMb, maxDocumentMb, maxMinutes } = ctx.settings.downloads;
   // What goes out as a file may be bigger than what goes out as playable media.
   const limit = delivery.asDocument || delivery.largeAsDocument ? Math.max(maxSizeMb, maxDocumentMb) : maxSizeMb;
   await ctx.react('⏳');
-  // A long video can take minutes. Say so once, or the reaction alone looks like nothing is happening.
-  const patience = setTimeout(() => {
-    void ctx.reply(`⏳ ${bold('Still downloading')}\n${quote('Long videos take a few minutes. I will send it as soon as it is here.')}`).catch(() => {});
-  }, PATIENCE_MS);
   const media = await attempt(ctx, 'Download failed', () =>
-    downloadMedia(url, delivery.kind, { maxSizeMb: limit, maxMinutes }, { audio: delivery.audio, maxHeight: delivery.maxHeight })
-  ).finally(() => clearTimeout(patience));
-  if (!media) return;
+    whileWaiting(ctx, () => downloadMedia(url, delivery.kind, { maxSizeMb: limit, maxMinutes }, { audio: delivery.audio, maxHeight: delivery.maxHeight }))
+  );
+  if (media) await sendDownloaded(ctx, media, delivery, icon, heading);
+}
 
+/**
+ * Hand a downloaded file over to the chat (as playable media, a voice note or a document), tell
+ * the person if that fails, and remove the file afterwards.
+ */
+export async function sendDownloaded(ctx: CommandContext, media: DownloadedMedia, delivery: Delivery, icon: string, heading: string): Promise<void> {
+  const { maxSizeMb } = ctx.settings.downloads;
   try {
     const { info } = media;
     const caption = card(icon, heading, infoRows(info, media.sizeBytes));

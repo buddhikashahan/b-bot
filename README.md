@@ -361,7 +361,12 @@ is never given them. They work in private chats. The search also works in groups
 (**Access**, or `.adult group on` inside the group): everyone there sees the results, which are titles
 without thumbnails, so allow it only where every member is an adult who expects it. A video is never sent
 into a group: asked for there, it goes to the requester's private chat. A video too big to play in the
-chat is sent as a file, up to the document limit on the **Commands** page. A person is confirmed by an
+chat is sent as a file, up to the document limit on the **Commands** page. Search and downloads read the
+site directly (`server/src/features/pornhub.ts`): the search page gives titles and lengths in a couple of
+seconds, and a video's plain MP4 file is fetched over 24 connections at once, because the site serves any
+single connection slowly. yt-dlp remains the fallback when the site's pages change. No file can be sent
+"without downloading": WhatsApp only takes files uploaded to it, so every video passes through the server;
+this only makes that passage short. A person is confirmed by an
 owner (`.adult allow <number>`, or the Access page) or by `.verify`: they send a photo of an ID card,
 passport or driving licence, Gemini reads the date of birth, and the bot does the arithmetic. The photo is
 not kept; only the number is remembered as verified. Be clear about what that check is worth: it reads a

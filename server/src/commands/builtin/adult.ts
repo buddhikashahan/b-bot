@@ -1,13 +1,17 @@
 import { ADULT_AGE, adultSearchUrl, checkAgeProof, isVerifiedAdult, parseAdultUrl, setVerifiedAdult, takeAttempt } from '../../features/adult.js';
 import { getApiKey } from '../../features/ai.js';
+import { mkdtemp, rm } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { findUrl, listVideos } from '../../features/downloader.js';
 import { parseTargets } from '../../features/forward.js';
 import { sendMenu, type MenuOption } from '../../features/menus.js';
+import { PornhubError, fetchInPieces, remoteSize, resolvePornhub, searchPornhub } from '../../features/pornhub.js';
 import { updateSettings } from '../../settings.js';
 import { bold, card, clock, code, fail, field, italic, note, quote, usage } from '../../whatsapp/format.js';
 import { contentOf, displayNumber } from '../../whatsapp/message-utils.js';
 import type { Command, CommandContext } from '../types.js';
-import { allowed, attempt, deliver } from './download.js';
+import { allowed, attempt, deliver, sendDownloaded, whileWaiting, type Delivery } from './download.js';
 
 /** The quality videos are fetched in: watchable on a phone without being huge. */
 const VIDEO_HEIGHT = 480;
@@ -34,6 +38,78 @@ async function adultsOnly(ctx: CommandContext): Promise<boolean> {
       : `🔞 ${bold('Adults only')}\n${quote(`Confirm your age first: send a photo of your ID card, passport or driving licence with ${code(`${ctx.prefix}verify`)} as its caption.`)}`
   );
   return false;
+}
+
+/** Direct downloads running now. A second one is welcome; a crowd would starve each other of connections. */
+let directDownloads = 0;
+const MAX_DIRECT_DOWNLOADS = 2;
+
+/**
+ * Download a video straight from the site's own files, over many connections at once, and send it.
+ * Much quicker than the general downloader, which stays as the fallback.
+ * @returns false when this way is not available for the video, so the caller should use the other
+ */
+async function directDownload(ctx: CommandContext, url: string, delivery: Delivery): Promise<boolean> {
+  if (directDownloads >= MAX_DIRECT_DOWNLOADS) return false;
+  const { maxSizeMb, maxDocumentMb, maxMinutes } = ctx.settings.downloads;
+  let video;
+  try {
+    video = await resolvePornhub(url);
+  } catch (error) {
+    if (!(error instanceof PornhubError)) throw error;
+    ctx.log.info(`direct download not possible (${error.message}); using the general downloader`);
+    return false;
+  }
+  if (video.durationSeconds && video.durationSeconds > maxMinutes * 60) {
+    await ctx.react('❌');
+    await ctx.reply(fail('Download failed', `That video is longer than ${maxMinutes} minutes, which is over my limit.`));
+    return true;
+  }
+
+  // The best quality up to the usual one whose file fits what may be sent.
+  const limit = Math.max(maxSizeMb, maxDocumentMb) * 1024 * 1024;
+  const candidates = video.files.filter(file => file.quality <= (delivery.maxHeight ?? VIDEO_HEIGHT));
+  let chosen: { url: string; size: number } | undefined;
+  try {
+    for (const file of candidates.length ? candidates : video.files.slice(-1)) {
+      const size = await remoteSize(file.url);
+      if (size <= limit) {
+        chosen = { url: file.url, size };
+        break;
+      }
+    }
+  } catch (error) {
+    if (!(error instanceof PornhubError)) throw error;
+    return false;
+  }
+  if (!chosen) {
+    await ctx.react('❌');
+    await ctx.reply(fail('Download failed', `That video is larger than my ${Math.max(maxSizeMb, maxDocumentMb)} MB limit, even in the lowest quality.`));
+    return true;
+  }
+
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'bbot-dl-'));
+  const cleanup = () => rm(dir, { recursive: true, force: true });
+  const file = path.join(dir, 'media.mp4');
+  const { url: source, size } = chosen;
+  directDownloads++;
+  try {
+    await whileWaiting(ctx, () => fetchInPieces(source, file, size));
+  } catch (error) {
+    await cleanup().catch(() => {});
+    if (!(error instanceof PornhubError)) throw error;
+    return false;
+  } finally {
+    directDownloads--;
+  }
+  await sendDownloaded(
+    ctx,
+    { info: { id: '', title: video.title, url: video.url, durationSeconds: video.durationSeconds, site: 'PornHub' }, file, sizeBytes: size, extension: 'mp4', mimetype: 'video/mp4', playable: true, cleanup },
+    delivery,
+    '🔞',
+    'Video'
+  );
+  return true;
 }
 
 /**
@@ -180,16 +256,21 @@ export const adultCommands: Command[] = [
         return;
       }
       await ctx.react('🔎');
-      const results = await attempt(ctx, 'Search failed', () => listVideos(adultSearchUrl(query), SEARCH_RESULTS));
+      // The site's own search page, read directly: quicker, and it lists each video's length. The general downloader is the fallback.
+      const results = await attempt(ctx, 'Search failed', () =>
+        searchPornhub(query, SEARCH_RESULTS).catch(error => {
+          if (!(error instanceof PornhubError)) throw error;
+          ctx.log.info(`direct search not possible (${error.message}); using the general downloader`);
+          return listVideos(adultSearchUrl(query), SEARCH_RESULTS);
+        })
+      );
       if (!results) return;
       const found = results.filter(item => parseAdultUrl(item.url));
       if (found.length === 0) {
         await ctx.reply(fail('Nothing found', `No result for "${query}".`));
         return;
       }
-      // Titles only: finding each video's length would mean opening every result, which takes many
-      // times longer than the search. Text only too: no thumbnails, so nothing explicit appears in
-      // the chat list or a notification.
+      // Text only: no thumbnails, so nothing explicit appears in the chat list or a notification.
       const options: MenuOption[] = found.map(item => ({
         label: `${bold(item.title.slice(0, 90))}${item.durationSeconds ? `\n   ⏱️ ${clock(item.durationSeconds)}` : ''}`,
         action: { type: 'command', text: `phdl ${item.url}` }
@@ -222,7 +303,10 @@ export const adultCommands: Command[] = [
       // The file itself never goes into a group: it is sent to whoever asked, in their own chat.
       if (ctx.isGroup) await ctx.reply(`📩 ${bold('Sending it to you privately')}\n${quote('Look in your chat with me in a moment.')}`);
       // These are long videos: one too big to play in the chat arrives as a file rather than shrunk.
-      await deliver(ctx.isGroup ? privately(ctx) : ctx, url, { kind: 'video', maxHeight: VIDEO_HEIGHT, asDocument, largeAsDocument: true }, '🔞', 'Video');
+      const target = ctx.isGroup ? privately(ctx) : ctx;
+      const delivery: Delivery = { kind: 'video', maxHeight: VIDEO_HEIGHT, asDocument, largeAsDocument: true };
+      await target.react('⏳');
+      if (!(await directDownload(target, url, delivery))) await deliver(target, url, delivery, '🔞', 'Video');
     }
   }
 ];
